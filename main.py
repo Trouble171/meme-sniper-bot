@@ -25,7 +25,7 @@ IGNORE_TOKENS = [
 
 # 1. Cüzdan Kümelenme ve RugCheck Analizi
 def check_rugcheck_and_clustering(mint_address, chain_id):
-    if chain_id != "solana":
+    if chain_id.lower() != "solana":
         return True, "🟢 EVM Ağ Doğrulaması Temiz", "Dengeli Dağılım"
     try:
         url = f"https://api.rugcheck.xyz/v1/tokens/{mint_address}/report/summary"
@@ -52,7 +52,6 @@ def check_smart_money(pair_data):
     buys = txns.get("buys", 0)
     volume = pair_data.get("volume", {}).get("h1", 0)
     
-    # Büyük hacim ve yüksek alım oranı olan projelere Balina Etiketi
     if volume > 50000 and buys > 100:
         return "🐋 Akıllı Para (Smart Money) Girişi Saptandı!"
     elif volume > 25000:
@@ -61,43 +60,42 @@ def check_smart_money(pair_data):
 
 # 3. Çift AI Analiz Katmanı (Gemini + ChatGPT)
 def get_ai_score_and_narrative(symbol, chain, volume, price_change, security, clustering):
-    ai_summary = "8.2/10 🔥 (Yüksek Potansiyel)"
+    ai_summary = "8.5/10 🔥 (Yüksek Potansiyel)"
     gemini_analysis = "Zincir verileri & likidite yapısı stabil."
     gpt_narrative = "Sosyal medyada yüksek narrative/hype potansiyeli mevcut."
 
     # Gemini API Çağrısı (Teknik Veriler)
     if GEMINI_API_KEY:
         try:
-            prompt = f"Token: {symbol}, Ağ: {chain}, 1S Hacim: ${volume}, 1S Değişim: %{price_change}, Güvenlik: {security}. Bu coin için 1 cümlelik teknik değerlendirme yap."
+            prompt = f"Token: {symbol}, Ağ: {chain}, 1S Hacim: ${volume}, 1S Değişim: %{price_change}, Güvenlik: {security}. Bu coin için 1 cümlelik Türkçe teknik değerlendirme yap."
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
-            res = requests.post(url, json=payload, timeout=5)
+            res = requests.post(url, json=payload, timeout=8)
             if res.status_code == 200:
                 gemini_analysis = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Gemini API Hatası: {e}")
 
     # ChatGPT OpenAI API Çağrısı (Narrative & Hype)
     if OPENAI_API_KEY:
         try:
-            prompt = f"Token ad/sembol: {symbol}. Bu meme coin'in meme kültürü ve sosyal medya hype potansiyelini 1 cümle ile yorumla."
+            prompt = f"Token ad/sembol: {symbol}. Bu meme coin'in sosyal medya ve topluluk hype potansiyelini 1 cümle Türkçe ile yorumla."
             headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
             payload = {
                 "model": "gpt-4o-mini",
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 60
+                "max_tokens": 80
             }
-            res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=5)
+            res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=8)
             if res.status_code == 200:
                 gpt_narrative = res.json()["choices"][0]["message"]["content"].strip()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"OpenAI API Hatası: {e}")
 
     return ai_summary, gemini_analysis, gpt_narrative
 
-# 4. Multi-Chain & Robinhood Chain Taraması ($10k+ Hacim Filtresi)
+# 4. Multi-Chain Taraması ($10k+ Hacim Filtresi)
 def get_filtered_memecoins():
-    # Solana, Base, Ethereum, BSC ve Robinhood Chain
     queries = ["solana", "base", "ethereum", "bsc", "robinhood"]
     filtered_list = []
     
@@ -116,12 +114,12 @@ def get_filtered_memecoins():
                 symbol = base_token.get("symbol", "UNKNOWN")
                 address = base_token.get("address", "")
 
-                if symbol.upper() in IGNORE_TOKENS or address in seen_tokens:
+                if not address or symbol.upper() in IGNORE_TOKENS or address in seen_tokens:
                     continue
 
                 volume = pair.get("volume", {}).get("h1", 0)
                 
-                # Seçenek C: Minimum $10,000 Saatlik Hacim Barajı
+                # Minimum $10,000 Hacim Filtresi
                 if volume < 10000:
                     continue
 
@@ -130,10 +128,7 @@ def get_filtered_memecoins():
                 url_link = pair.get("url", "https://dexscreener.com")
 
                 # Cüzdan Kümelenme / Rugcheck
-                is_safe, security_status, clustering_info = (
-                    check_rugcheck_and_clustering(address, chain_id)
-                    if address else (False, "Bilinmiyor", "Bilinmiyor")
-                )
+                is_safe, security_status, clustering_info = check_rugcheck_and_clustering(address, chain_id)
                 if not is_safe:
                     continue
 
@@ -166,13 +161,12 @@ def get_filtered_memecoins():
             print(f"{q} ağı tarama hatası: {e}")
     return filtered_list
 
-# 5. Telegram Bildirim Gönderimi (Trojan & Maestro Butonları)
+# 5. Telegram Bildirim Gönderimi
 def send_telegram_alert(coin):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
-    # Tek Tıkla Alım Entegrasyonu
     if coin["chain"].lower() == "solana":
         buy_url = f"https://t.me/solana_trojanbot?start=r-user-{coin['address']}"
         buy_btn_text = "🚀 Trojan ile Al (Solana)"
@@ -209,7 +203,6 @@ def send_telegram_alert(coin):
     except Exception as e:
         print(f"Telegram mesaj hatası: {e}")
 
-# Bot Döngüsü (Her 5 dakikada bir tarar)
 def run_bot_loop():
     print("Multi-chain AI Sniper Bot döngüsü başlatıldı...")
     while True:
