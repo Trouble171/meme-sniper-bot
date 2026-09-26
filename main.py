@@ -75,7 +75,6 @@ def check_smart_money(pair_data):
 
 # 3. Dinamik Skorlama & AI Analiz Katmanı
 def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, security):
-    # API kapalı/hatalı olsa dahi dinamik puan üreten matematiksel altyapı
     base_score = 6.0
     if volume > 100000:
         base_score += 1.5
@@ -229,7 +228,7 @@ def get_filtered_memecoins():
 
     return filtered_list
 
-# 5. Telegram Bildirim Gönderimi (Hatalı Karakter Düzeltildi)
+# 5. Telegram Bildirim Gönderimi (TEMİZLENMİŞ FORMAT)
 def send_telegram_alert(coin):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
