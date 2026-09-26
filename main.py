@@ -4,14 +4,12 @@ import threading
 import requests
 from flask import Flask
 
-# Flask Web Sunucusu (Render & UptimeRobot için)
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (Fixed AI + Dynamic Scoring) Aktif!", 200
+    return "Meme Coin Sniper Bot Aktif!", 200
 
-# Environment Değişkenleri
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -19,13 +17,9 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 seen_tokens = set()
 
-IGNORE_TOKENS = [
-    "USDC", "USDT", "WETH", "WBTC", "SOL", "ETH", "BNB", "WSOL", "WBNB", "DAI"
-]
-
+IGNORE_TOKENS = ["USDC", "USDT", "WETH", "WBTC", "SOL", "ETH", "BNB", "WSOL", "WBNB", "DAI"]
 INVALID_NAMES = ["SOLANA", "BSC", "ROBINHOOD", "ETHEREUM", "BASE", "BITCOIN", "BINANCE"]
 
-# 1. Gelişmiş RugCheck, Dev Wallet ve LP Burn Kontrolü
 def check_advanced_security(mint_address, chain_id):
     if chain_id.lower() != "solana":
         return True, "🟢 EVM Güvenlik Temiz", "Dengeli Dağılım", "🔥 LP Durumu Normal"
@@ -35,7 +29,6 @@ def check_advanced_security(mint_address, chain_id):
         if response.status_code == 200:
             data = response.json()
             score = data.get("score", 0)
-            
             risks = data.get("risks", [])
             high_dev_share = False
             lp_unlocked = False
@@ -48,11 +41,9 @@ def check_advanced_security(mint_address, chain_id):
                     lp_unlocked = True
 
             is_safe = score < 600 and not lp_unlocked and not high_dev_share
-            
             status = f"🟢 GÜVENLİ (Skor: {score})" if is_safe else f"🔴 RİSKLİ (Skor: {score})"
             clustering_info = "⚠️ Dev/Yüksek Cüzdan Payı Var!" if high_dev_share else "🟢 Dengeli Cüzdan Dağılımı"
             lp_info = "⚠️ LP Kilitli Değil / Riskli" if lp_unlocked else "🔥 LP Yakılmış / Kilitli"
-            
             return is_safe, status, clustering_info, lp_info
             
         return False, "⚠️ Güvenlik Verisi Alınamadı", "Bilinmiyor", "Bilinmiyor"
@@ -60,7 +51,6 @@ def check_advanced_security(mint_address, chain_id):
         print(f"RugCheck Hatası: {e}")
         return False, "⚠️ Güvenlik Taraması Yapılamadı", "Bilinmiyor", "Bilinmiyor"
 
-# 2. Smart Money & Hacim Anomali Kontrolü
 def check_smart_money(pair_data):
     txns = pair_data.get("txns", {}).get("h1", {})
     buys = txns.get("buys", 0)
@@ -73,7 +63,6 @@ def check_smart_money(pair_data):
         return "👀 Erken Aşama Balina Girişi Var"
     return "⚪ Standart İşlem Hacmi"
 
-# 3. Dinamik Skorlama & AI Analiz Katmanı
 def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, security):
     base_score = 6.0
     if volume > 100000:
@@ -95,21 +84,20 @@ def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, s
     gemini_analysis = f"Hacim (${volume:,.0f}) ve Likidite (${liquidity:,.0f}) dengesi teknik açıdan incelendi."
     gpt_narrative = f"{symbol} token için sosyal trend ivmesi takip ediliyor."
 
-    # Gemini REST API
     if GEMINI_API_KEY:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
             prompt_text = (
                 f"Token: {symbol}, Ağ: {chain}, Hacim: ${volume}, Değişim: %{price_change}. "
                 f"Bu veriler için 1 cümlelik Türkçe teknik yorum ve 1-10 arası dinamik puan üret. "
-                f"Format: SKOR: 8.3/10 | Yüksek alım baskısı ile ivme pozitif."
+                f"Format: SKOR: 8.3/10 - Yüksek alım baskısı ile ivme pozitif."
             )
             payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
             res = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=7)
             if res.status_code == 200:
                 text = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
                 if "SKOR:" in text:
-                    parts = text.split("SKOR:")[1].split("|")
+                    parts = text.split("SKOR:")[1].split("-")
                     try:
                         numeric_score = float(parts[0].replace("/10", "").strip())
                     except:
@@ -121,7 +109,6 @@ def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, s
         except Exception as e:
             print(f"Gemini Hatası: {e}")
 
-    # ChatGPT OpenAI API
     if OPENAI_API_KEY:
         try:
             url = "https://api.openai.com/v1/chat/completions"
@@ -139,7 +126,6 @@ def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, s
 
     return numeric_score, f"{numeric_score}/10 🔥", gemini_analysis, gpt_narrative
 
-# 4. Gelişmiş Filtreli Havuz Taraması
 def get_filtered_memecoins():
     filtered_list = []
     endpoints = [
@@ -228,7 +214,6 @@ def get_filtered_memecoins():
 
     return filtered_list
 
-# 5. Telegram Bildirim Gönderimi (TEMİZLENMİŞ FORMAT)
 def send_telegram_alert(coin):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
@@ -242,17 +227,17 @@ def send_telegram_alert(coin):
         buy_btn_text = f"🚀 Maestro ile Al ({coin['chain']})"
 
     caption = (
-        f"🔥 **AI GÜVEN & HYPE SKORU:** `{coin['ai_score']}`\n\n"
-        f"🌐 **Ağ:** `{coin['chain']}` | 🪙 **Token:** `${coin['symbol']}`\n"
-        f"📈 **1S Değişim:** %{coin['price_change']} | 📊 **1S Hacim:** ${coin['volume']:,.0f}\n"
-        f"💧 **Likidite:** ${coin['liquidity']:,.0f} \vert{} 💰 **FDV:** ${coin['fdv']:,.0f}\n\n"
-        f"🛡️ **Güvenlik:** {coin['security']}\n"
-        f"👥 **Kümelenme:** {coin['clustering']}\n"
-        f"🔥 **Likidite:** {coin['lp_info']}\n"
-        f"🐋 **Smart Money:** {coin['smart_money']}\n\n"
-        f"🤖 **Gemini Analizi:** _{coin['gemini_eval']}_\n"
-        f"💬 **ChatGPT Hype:** _{coin['gpt_narrative']}_\n\n"
-        f"📍 **CA:**\n`{coin['address']}`"
+        "🔥 **AI GÜVEN & HYPE SKORU:** `" + str(coin['ai_score']) + "`\n\n" +
+        "🌐 **Ağ:** `" + str(coin['chain']) + "` - 🪙 **Token:** $" + str(coin['symbol']) + "\n" +
+        "📈 **1S Değişim:** %" + str(coin['price_change']) + " - 📊 **1S Hacim:** $" + f"{coin['volume']:,.0f}" + "\n" +
+        "💧 **Likidite:** $" + f"{coin['liquidity']:,.0f}" + " - 💰 **FDV:** $" + f"{coin['fdv']:,.0f}" + "\n\n" +
+        "🛡️ **Güvenlik:** " + str(coin['security']) + "\n" +
+        "👥 **Kümelenme:** " + str(coin['clustering']) + "\n" +
+        "🔥 **Likidite:** " + str(coin['lp_info']) + "\n" +
+        "🐋 **Smart Money:** " + str(coin['smart_money']) + "\n\n" +
+        "🤖 **Gemini Analizi:** _" + str(coin['gemini_eval']) + "_\n" +
+        "💬 **ChatGPT Hype:** _" + str(coin['gpt_narrative']) + "_\n\n" +
+        "📍 **CA:**\n`" + str(coin['address']) + "`"
     )
 
     reply_markup = {
