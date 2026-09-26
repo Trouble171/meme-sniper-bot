@@ -9,7 +9,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (Dinamik Skor Sistemi) Aktif!", 200
+    return "Meme Coin Sniper Bot (Fixed AI + Dynamic Scoring) Aktif!", 200
 
 # Environment Değişkenleri
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -25,7 +25,7 @@ IGNORE_TOKENS = [
 
 INVALID_NAMES = ["SOLANA", "BSC", "ROBINHOOD", "ETHEREUM", "BASE", "BITCOIN", "BINANCE"]
 
-# 1. Gelişmiş Güvenlik Kontrolü
+# 1. Gelişmiş RugCheck, Dev Wallet ve LP Burn Kontrolü
 def check_advanced_security(mint_address, chain_id):
     if chain_id.lower() != "solana":
         return True, "🟢 EVM Güvenlik Temiz", "Dengeli Dağılım", "🔥 LP Durumu Normal"
@@ -60,7 +60,7 @@ def check_advanced_security(mint_address, chain_id):
         print(f"RugCheck Hatası: {e}")
         return False, "⚠️ Güvenlik Taraması Yapılamadı", "Bilinmiyor", "Bilinmiyor"
 
-# 2. Smart Money Kontrolü
+# 2. Smart Money & Hacim Anomali Kontrolü
 def check_smart_money(pair_data):
     txns = pair_data.get("txns", {}).get("h1", {})
     buys = txns.get("buys", 0)
@@ -75,7 +75,7 @@ def check_smart_money(pair_data):
 
 # 3. Dinamik Skorlama & AI Analiz Katmanı
 def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, security):
-    # API Hata verirse varsayılan olarak teknik verilerden DINAMIK Skor Hesapla:
+    # API kapalı/hatalı olsa dahi dinamik puan üreten matematiksel altyapı
     base_score = 6.0
     if volume > 100000:
         base_score += 1.5
@@ -93,17 +93,17 @@ def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, s
         base_score -= 1.0
 
     numeric_score = round(min(max(base_score, 4.0), 9.8), 1)
-    gemini_analysis = f"Hacim (${volume:,.0f}) ve Likidite (${liquidity:,.0f}) dengesi teknik açıdan değerlendirildi."
+    gemini_analysis = f"Hacim (${volume:,.0f}) ve Likidite (${liquidity:,.0f}) dengesi teknik açıdan incelendi."
     gpt_narrative = f"{symbol} token için sosyal trend ivmesi takip ediliyor."
 
-    # Gemini API İsteği
+    # Gemini REST API
     if GEMINI_API_KEY:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
             prompt_text = (
                 f"Token: {symbol}, Ağ: {chain}, Hacim: ${volume}, Değişim: %{price_change}. "
-                f"Bu veriler için 1 cümlelik Türkçe teknik momentum özeti ve 1-10 arası dinamik puan üret. "
-                f"Örnek çıktı: SKOR: 8.3/10 | Yüksek alım baskısı ile ivme pozitif."
+                f"Bu veriler için 1 cümlelik Türkçe teknik yorum ve 1-10 arası dinamik puan üret. "
+                f"Format: SKOR: 8.3/10 | Yüksek alım baskısı ile ivme pozitif."
             )
             payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
             res = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=7)
@@ -122,7 +122,7 @@ def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, s
         except Exception as e:
             print(f"Gemini Hatası: {e}")
 
-    # OpenAI API İsteği
+    # ChatGPT OpenAI API
     if OPENAI_API_KEY:
         try:
             url = "https://api.openai.com/v1/chat/completions"
@@ -140,7 +140,7 @@ def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, s
 
     return numeric_score, f"{numeric_score}/10 🔥", gemini_analysis, gpt_narrative
 
-# 4. Filtreli Havuz Taraması
+# 4. Gelişmiş Filtreli Havuz Taraması
 def get_filtered_memecoins():
     filtered_list = []
     endpoints = [
@@ -229,7 +229,7 @@ def get_filtered_memecoins():
 
     return filtered_list
 
-# 5. Telegram Bildirim Gönderimi
+# 5. Telegram Bildirim Gönderimi (Hatalı Karakter Düzeltildi)
 def send_telegram_alert(coin):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
