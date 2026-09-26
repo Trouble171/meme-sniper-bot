@@ -9,7 +9,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (Fixed AI + Advanced Filters) Aktif!", 200
+    return "Meme Coin Sniper Bot (Dinamik Skor Sistemi) Aktif!", 200
 
 # Environment Değişkenleri
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -25,7 +25,7 @@ IGNORE_TOKENS = [
 
 INVALID_NAMES = ["SOLANA", "BSC", "ROBINHOOD", "ETHEREUM", "BASE", "BITCOIN", "BINANCE"]
 
-# 1. Gelişmiş RugCheck, Dev Wallet ve LP Burn Kontrolü
+# 1. Gelişmiş Güvenlik Kontrolü
 def check_advanced_security(mint_address, chain_id):
     if chain_id.lower() != "solana":
         return True, "🟢 EVM Güvenlik Temiz", "Dengeli Dağılım", "🔥 LP Durumu Normal"
@@ -47,7 +47,6 @@ def check_advanced_security(mint_address, chain_id):
                 if "low liquidity" in risk_name or "unlocked liquidity" in risk_name:
                     lp_unlocked = True
 
-            # Filtre: Skor < 600 ve LP kilitli olmalı
             is_safe = score < 600 and not lp_unlocked and not high_dev_share
             
             status = f"🟢 GÜVENLİ (Skor: {score})" if is_safe else f"🔴 RİSKLİ (Skor: {score})"
@@ -61,7 +60,7 @@ def check_advanced_security(mint_address, chain_id):
         print(f"RugCheck Hatası: {e}")
         return False, "⚠️ Güvenlik Taraması Yapılamadı", "Bilinmiyor", "Bilinmiyor"
 
-# 2. Smart Money & Hacim Anomali Kontrolü
+# 2. Smart Money Kontrolü
 def check_smart_money(pair_data):
     txns = pair_data.get("txns", {}).get("h1", {})
     buys = txns.get("buys", 0)
@@ -74,74 +73,76 @@ def check_smart_money(pair_data):
         return "👀 Erken Aşama Balina Girişi Var"
     return "⚪ Standart İşlem Hacmi"
 
-# 3. Çift AI Analiz Katmanı (Tam Düzeltilmiş API Çağrıları)
-def get_ai_score_and_narrative(symbol, chain, volume, price_change, security, clustering):
-    gemini_analysis = "Teknik veri analiz edilemedi."
-    gpt_narrative = "Sosyal potansiyel inceleniyor."
-    numeric_score = 7.5
+# 3. Dinamik Skorlama & AI Analiz Katmanı
+def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, security):
+    # API Hata verirse varsayılan olarak teknik verilerden DINAMIK Skor Hesapla:
+    base_score = 6.0
+    if volume > 100000:
+        base_score += 1.5
+    elif volume > 50000:
+        base_score += 0.8
 
-    # Gemini REST API Düzeltilmiş İstek
+    if liquidity > 30000:
+        base_score += 1.0
+    elif liquidity > 15000:
+        base_score += 0.5
+
+    if price_change > 20:
+        base_score += 0.8
+    elif price_change < 0:
+        base_score -= 1.0
+
+    numeric_score = round(min(max(base_score, 4.0), 9.8), 1)
+    gemini_analysis = f"Hacim (${volume:,.0f}) ve Likidite (${liquidity:,.0f}) dengesi teknik açıdan değerlendirildi."
+    gpt_narrative = f"{symbol} token için sosyal trend ivmesi takip ediliyor."
+
+    # Gemini API İsteği
     if GEMINI_API_KEY:
         try:
-            prompt_text = (
-                f"Token: {symbol}, Ağ: {chain}, 1S Hacim: ${volume}, 1S Değişim: %{price_change}, Güvenlik: {security}. "
-                f"Bu verileri analiz et. ÖNCE 'SKOR: X.X/10' yazıp ardından 1 cümlelik Türkçe teknik yorum ekle. "
-                f"Örnek format: SKOR: 8.5/10 | Yüksek hacim ve dengeli dağılım ile yükseliş potansiyeli mevcut."
-            )
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-            headers = {"Content-Type": "application/json"}
-            payload = {
-                "contents": [{
-                    "parts": [{"text": prompt_text}]
-                }]
-            }
-            res = requests.post(url, json=payload, headers=headers, timeout=10)
+            prompt_text = (
+                f"Token: {symbol}, Ağ: {chain}, Hacim: ${volume}, Değişim: %{price_change}. "
+                f"Bu veriler için 1 cümlelik Türkçe teknik momentum özeti ve 1-10 arası dinamik puan üret. "
+                f"Örnek çıktı: SKOR: 8.3/10 | Yüksek alım baskısı ile ivme pozitif."
+            )
+            payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
+            res = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=7)
             if res.status_code == 200:
-                res_data = res.json()
-                raw_text = res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                
-                if "SKOR:" in raw_text:
-                    score_part = raw_text.split("SKOR:")[1].strip()
-                    if "|" in score_part:
-                        val_str, eval_str = score_part.split("|", 1)
-                        try:
-                            numeric_score = float(val_str.replace("/10", "").strip())
-                        except:
-                            numeric_score = 7.5
-                        gemini_analysis = eval_str.strip()
-                    else:
-                        gemini_analysis = score_part
+                text = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                if "SKOR:" in text:
+                    parts = text.split("SKOR:")[1].split("|")
+                    try:
+                        numeric_score = float(parts[0].replace("/10", "").strip())
+                    except:
+                        pass
+                    if len(parts) > 1:
+                        gemini_analysis = parts[1].strip()
                 else:
-                    gemini_analysis = raw_text
-            else:
-                print(f"Gemini API HTTP Hatası ({res.status_code}): {res.text}")
+                    gemini_analysis = text
         except Exception as e:
-            print(f"Gemini Kod Hatası: {e}")
+            print(f"Gemini Hatası: {e}")
 
-    # ChatGPT OpenAI API
+    # OpenAI API İsteği
     if OPENAI_API_KEY:
         try:
-            prompt_text = f"Meme token sembolü: {symbol}. Bu sembolün meme kültüründeki viral potansiyelini 1 cümle Türkçe ile yorumla."
+            url = "https://api.openai.com/v1/chat/completions"
             headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
             payload = {
                 "model": "gpt-4o-mini",
-                "messages": [{"role": "user", "content": prompt_text}],
-                "max_tokens": 80
+                "messages": [{"role": "user", "content": f"{symbol} kripto parasının viral potansiyeli nedir? 1 Türkçe cümle."}],
+                "max_tokens": 60
             }
-            res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=8)
+            res = requests.post(url, headers=headers, json=payload, timeout=7)
             if res.status_code == 200:
                 gpt_narrative = res.json()["choices"][0]["message"]["content"].strip()
-            else:
-                print(f"OpenAI API HTTP Hatası ({res.status_code}): {res.text}")
         except Exception as e:
-            print(f"OpenAI Kod Hatası: {e}")
+            print(f"OpenAI Hatası: {e}")
 
     return numeric_score, f"{numeric_score}/10 🔥", gemini_analysis, gpt_narrative
 
-# 4. Gelişmiş Filtreli Havuz Taraması
+# 4. Filtreli Havuz Taraması
 def get_filtered_memecoins():
     filtered_list = []
-    
     endpoints = [
         "https://api.dexscreener.com/token-boosts/top/v1",
         "https://api.dexscreener.com/token-profiles/latest/v1"
@@ -178,7 +179,6 @@ def get_filtered_memecoins():
                     if not address or symbol.upper() in IGNORE_TOKENS or address in seen_tokens:
                         continue
 
-                    # Ağ veya ana isim taklidi engelleyici
                     if symbol.upper() in INVALID_NAMES or chain_id.upper() in INVALID_NAMES:
                         continue
 
@@ -187,35 +187,22 @@ def get_filtered_memecoins():
                     fdv = pair.get("fdv", 0)
                     price_change = pair.get("priceChange", {}).get("h1", 0)
 
-                    # Dengeli Filtreler:
-                    # Minimum $25,000 Hacim
-                    if volume < 25000:
+                    if volume < 25000 or liquidity < 8000 or price_change < -25:
                         continue
 
-                    # Minimum $8,000 Likidite
-                    if liquidity < 8000:
-                        continue
-
-                    # Yapay Hacim Engeli (Hacim / Likidite Oranı 15'ten büyükse ele)
                     if liquidity > 0 and (volume / liquidity) > 15:
-                        continue
-
-                    # Sert Çöküş Yemiş Coin'leri Ele (Son 1 saatte -%25'ten fazla düşenler)
-                    if price_change < -25:
                         continue
 
                     url_link = pair.get("url", "https://dexscreener.com")
 
-                    # Güvenlik Kontrolü
                     is_safe, security_status, clustering_info, lp_info = check_advanced_security(address, chain_id)
                     if not is_safe:
                         continue
 
                     smart_money_status = check_smart_money(pair)
 
-                    # AI Değerlendirmesi
                     num_score, ai_score_str, gemini_eval, gpt_narrative = get_ai_score_and_narrative(
-                        symbol, chain_id, volume, price_change, security_status, clustering_info
+                        symbol, chain_id, volume, price_change, liquidity, security_status
                     )
 
                     seen_tokens.add(address)
@@ -238,7 +225,7 @@ def get_filtered_memecoins():
                         "dex_url": url_link,
                     })
         except Exception as e:
-            print(f"Token detay çekme hatası: {e}")
+            print(f"Token detay hatası: {e}")
 
     return filtered_list
 
