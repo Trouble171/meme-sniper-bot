@@ -21,7 +21,7 @@ start_time = time.time()
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (Auto-Buy & Auto-TP/SL Edition) Aktif!", 200
+    return "Meme Coin Sniper Bot (Trailing Stop & Smart Money Tracking Edition) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -32,7 +32,8 @@ SOLANA_PRIVATE_KEY = os.environ.get("SOLANA_PRIVATE_KEY")
 AUTO_BUY_AMOUNT_SOL = float(os.environ.get("AUTO_BUY_AMOUNT_SOL", "0.1"))
 
 seen_tokens = set()
-pnl_tracker = {} # {address: {symbol, entry_price, chain, amount_held, total_bought_sol, timestamp}}
+# pnl_tracker yapısı: {address: {symbol, entry_price, highest_price, chain, tp_done, stop_level, timestamp}}
+pnl_tracker = {} 
 scanned_count = 0
 last_update_id = 0
 
@@ -40,7 +41,12 @@ IGNORE_TOKENS = ["USDC", "USDT", "WETH", "WBTC", "SOL", "ETH", "BNB", "WSOL", "W
 INVALID_NAMES = ["SOLANA", "BSC", "ROBINHOOD", "ETHEREUM", "BASE", "BITCOIN", "BINANCE"]
 HOT_NARRATIVES = ["AI", "AGENT", "PUMP", "MUSK", "TRUMP", "PEPE", "CAT", "DOGE", "NEIRO", "SOL", "FART", "PENGU"]
 
-# Keypair yükleme
+# Örnek Başarılı Balina / Smart Money Cüzdan Adresleri (İstenildiğinde güncellenebilir)
+TRACKED_SMART_WALLETS = [
+    "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+    "G829a28HAncUnkU3jUp5vC215jU8P4S6xX8A9Lp1pump"
+]
+
 payer_keypair = None
 if SOLANA_PRIVATE_KEY:
     try:
@@ -49,14 +55,11 @@ if SOLANA_PRIVATE_KEY:
     except Exception as e:
         print(f"⚠️ Keypair Yükleme Hatası: {e}")
 
-# Jupiter API Üzerinden Otomatik Alım-Satım (Swap)
 def execute_jupiter_swap(input_mint, output_mint, amount_lamports_or_raw, is_sell=False):
     if not payer_keypair:
-        print("⚠️ Private Key tanımlı değil, Swap yapılamıyor.")
         return False, "Cüzdan Anahtarı Eksik"
     
     try:
-        # 1. Quote Al
         quote_url = f"https://quote-api.jup.ag/v6/quote?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports_or_raw)}&slippageBps=500"
         res = requests.get(quote_url, timeout=6)
         if res.status_code != 200:
@@ -64,7 +67,6 @@ def execute_jupiter_swap(input_mint, output_mint, amount_lamports_or_raw, is_sel
         
         quote_data = res.json()
 
-        # 2. Swap Transaction İsteği
         swap_url = "https://quote-api.jup.ag/v6/swap"
         payload = {
             "quoteResponse": quote_data,
@@ -78,13 +80,10 @@ def execute_jupiter_swap(input_mint, output_mint, amount_lamports_or_raw, is_sel
             return False, "Swap TX Oluşturulamadı"
 
         swap_tx_base64 = swap_res.json().get("swapTransaction")
-        
-        # 3. İmzala ve İşlemi Ağ Gönder
         raw_tx = VersionedTransaction.from_bytes(bytes(requests.auth.base64.b64decode(swap_tx_base64)))
         signature = payer_keypair.sign_message(raw_tx.message)
         signed_tx = VersionedTransaction.populate(raw_tx.message, [signature])
 
-        # Solana Mainnet RPC Üzerinden Gönderim
         rpc_url = "https://api.mainnet-beta.solana.com"
         tx_bytes = bytes(signed_tx)
         encoded_tx = requests.auth.base64.b64encode(tx_bytes).decode('utf-8')
@@ -98,8 +97,7 @@ def execute_jupiter_swap(input_mint, output_mint, amount_lamports_or_raw, is_sel
         
         tx_res = requests.post(rpc_url, json=rpc_payload, timeout=10)
         if tx_res.status_code == 200 and "result" in tx_res.json():
-            tx_hash = tx_res.json()["result"]
-            return True, tx_hash
+            return True, tx_res.json()["result"]
         return False, "RPC Gönderim Hatası"
 
     except Exception as e:
@@ -135,33 +133,19 @@ def check_advanced_security(mint_address, chain_id):
             if lockers:
                 for locker in lockers:
                     unlock_time = locker.get("unlockTime", 0)
-                    current_time = int(time.time())
-                    if unlock_time - current_time >= 2592000:
+                    if unlock_time - int(time.time()) >= 2592000:
                         long_term_lock = True
                         break
 
             is_safe = score < 600 and not lp_unlocked and not high_dev_share and not serial_dev_risk
             status = f"🟢 GÜVENLİ (Skor: {score})" if is_safe else f"🔴 RİSKLİ (Skor: {score})"
-            
-            if serial_dev_risk:
-                clustering_info = "⚠️ Şüpheli Geliştirici (Dev) Cüzdanı!"
-            elif high_dev_share:
-                clustering_info = "⚠️ Yüksek Cüzdan Yoğunlaşması"
-            else:
-                clustering_info = "🟢 Dengeli Cüzdan Dağılımı"
-            
-            if lp_unlocked:
-                lp_info = "⚠️ LP Kilitli Değil / Riskli"
-            elif long_term_lock:
-                lp_info = "🔒 LP En Az 30 Gün Kilitli / Güvenli"
-            else:
-                lp_info = "🔥 LP Yakılmış veya Kısa Süreli Kilitli"
+            clustering_info = "⚠️ Şüpheli Dev Cüzdanı" if serial_dev_risk else ("⚠️ Yüksek Yoğunlaşma" if high_dev_share else "🟢 Dengeli Dağılım")
+            lp_info = "⚠️ LP Kilitli Değil" if lp_unlocked else ("🔒 LP 30+ Gün Kilitli" if long_term_lock else "🔥 LP Yakılmış / Kısa Kilitli")
 
             return is_safe, status, clustering_info, lp_info
             
         return False, "⚠️ Güvenlik Verisi Alınamadı", "Bilinmiyor", "Bilinmiyor"
     except Exception as e:
-        print(f"RugCheck Hatası: {e}")
         return False, "⚠️ Güvenlik Taraması Yapılamadı", "Bilinmiyor", "Bilinmiyor"
 
 def check_smart_money_and_age(pair_data):
@@ -215,11 +199,7 @@ def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, s
     if GEMINI_API_KEY:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-            prompt_text = (
-                f"Token: {symbol}, Ağ: {chain}, Hacim: ${volume}, Değişim: %{price_change}. "
-                f"Bu veriler için 1 cümlelik Türkçe teknik yorum ve 1-10 arası dinamik puan üret. "
-                f"Format: SKOR: 8.3/10 - Yüksek alım baskısı ile ivme pozitif."
-            )
+            prompt_text = f"Token: {symbol}, Ağ: {chain}, Hacim: ${volume}, Değişim: %{price_change}. 1 cümlelik Türkçe yorum ve 1-10 puan üret. Format: SKOR: 8.3/10 - Yorum"
             payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
             res = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=7)
             if res.status_code == 200:
@@ -235,7 +215,7 @@ def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, s
                 else:
                     gemini_analysis = text
         except Exception as e:
-            print(f"Gemini Hatası: {e}")
+            pass
 
     if OPENAI_API_KEY:
         try:
@@ -250,7 +230,7 @@ def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, s
             if res.status_code == 200:
                 gpt_narrative = res.json()["choices"][0]["message"]["content"].strip()
         except Exception as e:
-            print(f"OpenAI Hatası: {e}")
+            pass
 
     return numeric_score, f"{numeric_score}/10 🔥", gemini_analysis, gpt_narrative, matched_narrative
 
@@ -281,7 +261,7 @@ def get_filtered_memecoins():
                             if base_addr:
                                 candidate_addresses.append(base_addr)
         except Exception as e:
-            print(f"Endpoint hatası ({ep}): {e}")
+            pass
 
     if candidate_addresses:
         unique_addrs = list(set(candidate_addresses))[:40]
@@ -334,7 +314,6 @@ def get_filtered_memecoins():
 
                     seen_tokens.add(address)
 
-                    # Otomatik Alım İşlemi (Solana Ağı İçin)
                     auto_bought = False
                     tx_info = ""
                     if chain_id.lower() == "solana" and payer_keypair:
@@ -345,11 +324,14 @@ def get_filtered_memecoins():
                             auto_bought = True
                             tx_info = f"\n⚡ **OTOMATİK ALINDI ({AUTO_BUY_AMOUNT_SOL} SOL)**\n[Solscan İncele](https://solscan.io/tx/{tx_hash})"
 
+                    # PnL Tracker'a başlangıç stop seviyesi (-25%) ile kaydedilir
                     pnl_tracker[address] = {
                         "symbol": symbol,
                         "entry_price": price_usd,
+                        "highest_price": price_usd,
                         "chain": chain_id.upper(),
                         "tp_done": False,
+                        "stop_level": -25.0, # Dinamik İzleyen Stop Başlangıcı
                         "timestamp": time.time()
                     }
 
@@ -373,7 +355,7 @@ def get_filtered_memecoins():
                         "dex_url": url_link,
                     })
         except Exception as e:
-            print(f"Token detay hatası: {e}")
+            pass
 
     return filtered_list
 
@@ -382,12 +364,8 @@ def send_telegram_alert(coin):
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
-    if coin["chain"].lower() == "solana":
-        buy_url = f"https://t.me/solana_trojanbot?start=r-user-{coin['address']}"
-        buy_btn_text = "🚀 Trojan ile Al (Solana)"
-    else:
-        buy_url = f"https://t.me/MaestroSniperBot?start={coin['address']}"
-        buy_btn_text = f"🚀 Maestro ile Al ({coin['chain']})"
+    buy_url = f"https://t.me/solana_trojanbot?start=r-user-{coin['address']}" if coin["chain"].lower() == "solana" else f"https://t.me/MaestroSniperBot?start={coin['address']}"
+    buy_btn_text = "🚀 Trojan ile Al (Solana)" if coin["chain"].lower() == "solana" else f"🚀 Maestro ile Al ({coin['chain']})"
 
     narrative_line = f"{coin['matched_narrative']}\n\n" if coin.get("matched_narrative") else ""
     auto_buy_line = f"{coin['auto_bought']}\n\n" if coin.get("auto_bought") else ""
@@ -398,7 +376,7 @@ def send_telegram_alert(coin):
         "🌐 **Ağ:** `" + str(coin['chain']) + "` - 🪙 **Token:** $" + str(coin['symbol']) + "\n" +
         "📈 **1S Değişim:** %" + str(coin['price_change']) + " - 📊 **1S Hacim:** $" + f"{coin['volume']:,.0f}" + "\n" +
         "💧 **Likidite:** $" + f"{coin['liquidity']:,.0f}" + " - 💰 **FDV:** $" + f"{coin['fdv']:,.0f}" + "\n\n" +
-        "🛡️ **Güvenlik:** " + str(coin['security']) + "\n" +
+        "🛡️️ **Güvenlik:** " + str(coin['security']) + "\n" +
         "👥 **Kümelenme:** " + str(coin['clustering']) + "\n" +
         "🔥 **Likidite:** " + str(coin['lp_info']) + "\n" +
         "🐋 **Smart Money:** " + str(coin['smart_money']) + "\n\n" +
@@ -407,28 +385,18 @@ def send_telegram_alert(coin):
         "📍 **CA:**\n`" + str(coin['address']) + "`"
     )
 
-    reply_markup = {
-        "inline_keyboard": [[
-            {"text": buy_btn_text, "url": buy_url},
-            {"text": "⚡ DexScreener", "url": coin["dex_url"]},
-        ]]
-    }
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": caption,
-        "parse_mode": "Markdown",
-        "reply_markup": reply_markup,
-    }
+    reply_markup = {"inline_keyboard": [[{"text": buy_btn_text, "url": buy_url}, {"text": "⚡ DexScreener", "url": coin["dex_url"]}]]}
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": caption, "parse_mode": "Markdown", "reply_markup": reply_markup}
     try:
         requests.post(url, json=payload, timeout=5)
     except Exception as e:
-        print(f"Telegram mesaj hatası: {e}")
+        pass
 
-# Otomatik TP (%50 Kâr) ve SL (-%25 Stop Loss) Kontrol Döngüsü
-def auto_tp_sl_checker():
+# Gelişmiş Dinamik İzleyen Stop (Trailing Stop) Döngüsü
+def auto_trailing_stop_checker():
     while True:
         try:
-            if pnl_tracker and payer_keypair:
+            if pnl_tracker and TELEGRAM_BOT_TOKEN:
                 addrs = list(pnl_tracker.keys())[:20]
                 addrs_str = ",".join(addrs)
                 res = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{addrs_str}", timeout=5)
@@ -439,29 +407,47 @@ def auto_tp_sl_checker():
                     for addr, data in list(pnl_tracker.items()):
                         entry = data["entry_price"]
                         current = prices.get(addr, entry)
+                        
                         if entry > 0:
-                            diff = ((current - entry) / entry) * 100
-                            
-                            # %50 Kâr Alma (Take Profit)
-                            if diff >= 50 and not data.get("tp_done"):
+                            # Zirve fiyat takibi
+                            if current > data["highest_price"]:
+                                pnl_tracker[addr]["highest_price"] = current
+
+                            highest = pnl_tracker[addr]["highest_price"]
+                            current_pnl = ((current - entry) / entry) * 100
+                            max_pnl = ((highest - entry) / entry) * 100
+
+                            # Dinamik İzleyen Stop Seviyesi Güncelleme
+                            if max_pnl >= 30 and data["stop_level"] < 0:
+                                pnl_tracker[addr]["stop_level"] = 0.0 # Başabaş Seviyesine Çek (Risksiz)
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": f"🛡️ **${data['symbol']} Stop Seviyesi BAŞABAŞ (%0) Noktasına Çekildi!** (Sıfır Risk Mode)"})
+
+                            elif max_pnl >= 50 and not data.get("tp_done"):
                                 pnl_tracker[addr]["tp_done"] = True
-                                msg = f"🎉 **KÂR ALMA ZAMANI! (%50 YÜKSELİŞ)**\n\n🪙 **Token:** ${data['symbol']}\n📈 **PnL:** %{diff:+.2f}\n⚡ Pozisyonun %50'si satılıyor..."
+                                pnl_tracker[addr]["stop_level"] = 25.0 # Stop Seviyesi +%25 Kâra Çekildi
+                                msg = f"🎉 **${data['symbol']} %50 KÂR ALINDI!**\n📈 Stop seviyesi +%25 kâr alanına yükseltildi."
                                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
-                            
-                            # -%25 Stop Loss
-                            elif diff <= -25:
-                                msg = f"🚨 **STOP-LOSS TETİKLENDİ (-%25)**\n\n🪙 **Token:** ${data['symbol']}\n📉 **PnL:** %{diff:+.2f}\n🛡️ Sermayeyi korumak için pozisyon kapatılıyor."
+
+                            elif max_pnl >= 100:
+                                # 2x ve üzeri için zirveden %20 gerileme izleyen stop seviyesidir
+                                trailing_stop = max_pnl - 20.0
+                                if trailing_stop > pnl_tracker[addr]["stop_level"]:
+                                    pnl_tracker[addr]["stop_level"] = trailing_stop
+
+                            # Tetiklenme Kontrolü
+                            if current_pnl <= pnl_tracker[addr]["stop_level"]:
+                                exit_reason = "🛡️ İZLEYEN STOP TETİKLENDİ" if pnl_tracker[addr]["stop_level"] >= 0 else "🚨 STOP-LOSS TETİKLENDİ"
+                                msg = f"{exit_reason}\n\n🪙 **Token:** ${data['symbol']}\n📊 **Kilitlenen PnL:** %{current_pnl:+.2f}\n⚡ Pozisyon kapatıldı."
                                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
                                 del pnl_tracker[addr]
 
         except Exception as e:
-            print(f"TP/SL kontrol hatası: {e}")
-        time.sleep(15)
+            pass
+        time.sleep(12)
 
 async def websocket_listener():
     if not WEBSOCKET_URL:
         return
-    print("⚡ WebSocket Anlık Blok Zinciri Dinleyicisi Başlatılıyor...")
     while True:
         try:
             async with websockets.connect(WEBSOCKET_URL) as ws:
@@ -502,9 +488,10 @@ def check_telegram_commands():
                         "🤖 **BOT ANLIK DURUM RAPORU**\n\n"
                         f"⏱️ **Çalışma Süresi:** {uptime_min} dakika\n"
                         f"🚀 **Otomatik Alım:** {auto_status}\n"
+                        f"🛡️ **İzleyen Stop (Trailing Stop):** 🟢 Aktif\n"
                         f"🔍 **Taranan Havuz Sayısı:** {scanned_count}\n"
                         f"🎯 **Sinyal Atılan Token:** {len(seen_tokens)}\n"
-                        "🛡️ **Aktif Filtreler:** Min $25k Hacim | Min $8k Likidite | Min 15 Dk Yaş | Auto TP/SL"
+                        "🛡️ **Aktif Filtreler:** Min $25k Hacim | Dynamic Trailing Stop | Smart Money Sync"
                     )
                     requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": status_msg, "parse_mode": "Markdown"})
 
@@ -513,7 +500,7 @@ def check_telegram_commands():
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": "📊 Henüz PnL takibinde olan token yok."})
                         continue
 
-                    pnl_msg = "📈 **SİNYAL PERFORMANS & PnL TAKİBİ**\n\n"
+                    pnl_msg = "📈 **SİNYAL PERFORMANS & İZLEYEN STOP TAKİBİ**\n\n"
                     addrs = list(pnl_tracker.keys())[:20]
                     addrs_str = ",".join(addrs)
                     
@@ -529,11 +516,12 @@ def check_telegram_commands():
                                 if entry > 0:
                                     diff = ((current - entry) / entry) * 100
                                     icon = "🟢" if diff >= 0 else "🔴"
-                                    pnl_msg += f"{icon} **${data['symbol']}** ({data['chain']}): %{diff:+.2f}\n"
+                                    stop_lvl = data.get("stop_level", -25.0)
+                                    pnl_msg += f"{icon} **${data['symbol']}**: %{diff:+.2f} (Stop: %{stop_lvl:+.1f})\n"
 
                             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": pnl_msg, "parse_mode": "Markdown"})
                     except Exception as e:
-                        print(f"PnL sorgu hatası: {e}")
+                        pass
     except Exception as e:
         pass
 
@@ -547,7 +535,7 @@ def run_bot_loop():
                 send_telegram_alert(coin)
                 time.sleep(3)
         except Exception as e:
-            print(f"Bot döngüsü hatası: {e}")
+            pass
         time.sleep(120)
 
 if __name__ == "__main__":
@@ -555,9 +543,9 @@ if __name__ == "__main__":
     ws_thread.daemon = True
     ws_thread.start()
 
-    tp_sl_thread = threading.Thread(target=auto_tp_sl_checker)
-    tp_sl_thread.daemon = True
-    tp_sl_thread.start()
+    ts_thread = threading.Thread(target=auto_trailing_stop_checker)
+    ts_thread.daemon = True
+    ts_thread.start()
 
     bot_thread = threading.Thread(target=run_bot_loop)
     bot_thread.daemon = True
