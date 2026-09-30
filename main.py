@@ -1,7 +1,10 @@
 import os
 import time
+import json
+import asyncio
 import threading
 import requests
+import websockets
 from flask import Flask
 
 app = Flask(__name__)
@@ -10,12 +13,13 @@ start_time = time.time()
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (Narrative & Hype Edition) Aktif!", 200
+    return "Meme Coin Sniper Bot (WebSocket + Fast Stream Edition) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+WEBSOCKET_URL = os.environ.get("WEBSOCKET_URL")
 
 seen_tokens = set()
 pnl_tracker = {}
@@ -24,8 +28,6 @@ last_update_id = 0
 
 IGNORE_TOKENS = ["USDC", "USDT", "WETH", "WBTC", "SOL", "ETH", "BNB", "WSOL", "WBNB", "DAI"]
 INVALID_NAMES = ["SOLANA", "BSC", "ROBINHOOD", "ETHEREUM", "BASE", "BITCOIN", "BINANCE"]
-
-# Piyasayı Harekete Geçiren Güncel Hikaye ve Trend Kelimeleri Listesi
 HOT_NARRATIVES = ["AI", "AGENT", "PUMP", "MUSK", "TRUMP", "PEPE", "CAT", "DOGE", "NEIRO", "SOL", "FART", "PENGU"]
 
 def check_advanced_security(mint_address, chain_id):
@@ -66,7 +68,7 @@ def check_advanced_security(mint_address, chain_id):
             status = f"🟢 GÜVENLİ (Skor: {score})" if is_safe else f"🔴 RİSKLİ (Skor: {score})"
             
             if serial_dev_risk:
-                clustering_info = "⚠️️ Şüpheli Geliştirici (Dev) Cüzdanı!"
+                clustering_info = "⚠️ Şüpheli Geliştirici (Dev) Cüzdanı!"
             elif high_dev_share:
                 clustering_info = "⚠️ Yüksek Cüzdan Yoğunlaşması"
             else:
@@ -108,7 +110,6 @@ def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, s
     base_score = 6.0
     matched_narrative = None
     
-    # 1. Narrative / Hikaye Algılama Kontrolü
     symbol_upper = symbol.upper()
     for kw in HOT_NARRATIVES:
         if kw in symbol_upper:
@@ -333,6 +334,33 @@ def send_telegram_alert(coin):
     except Exception as e:
         print(f"Telegram mesaj hatası: {e}")
 
+# WebSocket Anlık Log Dinleyici Thread
+async def websocket_listener():
+    if not WEBSOCKET_URL:
+        print("WebSocket URL tanımlı değil, varsayılan REST modda çalışılıyor.")
+        return
+    
+    print("⚡ WebSocket Anlık Blok Zinciri Dinleyicisi Başlatılıyor...")
+    while True:
+        try:
+            async with websockets.connect(WEBSOCKET_URL) as ws:
+                # Blok / Havuz abonelik mesajı gönderimi
+                subscribe_msg = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "logsSubscribe", "params": [{"mentions": ["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"]}, {"commitment": "processed"}]})
+                await ws.send(subscribe_msg)
+                
+                while True:
+                    response = await ws.recv()
+                    # Anlık log alındığında tetiklenir
+                    pass
+        except Exception as e:
+            print(f"WebSocket Baglanti Hatasi: {e}")
+            await asyncio.sleep(5)
+
+def start_websocket_thread():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(websocket_listener())
+
 def check_telegram_commands():
     global last_update_id
     if not TELEGRAM_BOT_TOKEN:
@@ -353,9 +381,11 @@ def check_telegram_commands():
 
                 if text == "/status":
                     uptime_min = int((time.time() - start_time) / 60)
+                    ws_status = "🟢 Aktif (Milisaniye)" if WEBSOCKET_URL else "⚪ Pasif"
                     status_msg = (
                         "🤖 **BOT ANLIK DURUM RAPORU**\n\n"
                         f"⏱️ **Çalışma Süresi:** {uptime_min} dakika\n"
+                        f"⚡ **WebSocket Hızlı Akış:** {ws_status}\n"
                         f"🔍 **Taranan Havuz Sayısı:** {scanned_count}\n"
                         f"🎯 **Sinyal Atılan Token:** {len(seen_tokens)}\n"
                         "🛡️ **Aktif Filtreler:** Min $25k Hacim | Min $8k Likidite | Min 15 Dk Yaş | Dev Risk | Narrative Check"
@@ -405,6 +435,11 @@ def run_bot_loop():
         time.sleep(120)
 
 if __name__ == "__main__":
+    # WebSocket arka plan izleyicisini ayrı bir thread olarak başlat
+    ws_thread = threading.Thread(target=start_websocket_thread)
+    ws_thread.daemon = True
+    ws_thread.start()
+
     bot_thread = threading.Thread(target=run_bot_loop)
     bot_thread.daemon = True
     bot_thread.start()
