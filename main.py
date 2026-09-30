@@ -10,7 +10,7 @@ start_time = time.time()
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (Dev Check + Interactive Commands) Aktif!", 200
+    return "Meme Coin Sniper Bot (Narrative & Hype Edition) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -18,14 +18,16 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 seen_tokens = set()
-pnl_tracker = {}  # {address: {symbol, entry_price, chain, timestamp}}
+pnl_tracker = {}
 scanned_count = 0
 last_update_id = 0
 
 IGNORE_TOKENS = ["USDC", "USDT", "WETH", "WBTC", "SOL", "ETH", "BNB", "WSOL", "WBNB", "DAI"]
 INVALID_NAMES = ["SOLANA", "BSC", "ROBINHOOD", "ETHEREUM", "BASE", "BITCOIN", "BINANCE"]
 
-# 1, 2 & 3. Gelişmiş RugCheck, LP Kilit Süresi ve Dev Cüzdan Risk Taraması
+# Piyasayı Harekete Geçiren Güncel Hikaye ve Trend Kelimeleri Listesi
+HOT_NARRATIVES = ["AI", "AGENT", "PUMP", "MUSK", "TRUMP", "PEPE", "CAT", "DOGE", "NEIRO", "SOL", "FART", "PENGU"]
+
 def check_advanced_security(mint_address, chain_id):
     if chain_id.lower() != "solana":
         return True, "🟢 EVM Güvenlik Temiz", "Dengeli Dağılım", "🔥 LP Durumu Normal"
@@ -37,7 +39,6 @@ def check_advanced_security(mint_address, chain_id):
             score = data.get("score", 0)
             risks = data.get("risks", [])
             lockers = data.get("lpLockers", [])
-            creator = data.get("creator", "")
             
             high_dev_share = False
             lp_unlocked = False
@@ -49,11 +50,9 @@ def check_advanced_security(mint_address, chain_id):
                     high_dev_share = True
                 if "low liquidity" in risk_name or "unlocked liquidity" in risk_name:
                     lp_unlocked = True
-                # Seri Rugpull / Çöp Token Üreticisi Cüzdan Taraması
                 if "creator" in risk_name or "dangerous authority" in risk_name:
                     serial_dev_risk = True
 
-            # En az 30 günlük kilit süresi kontrolü
             long_term_lock = False
             if lockers:
                 for locker in lockers:
@@ -67,7 +66,7 @@ def check_advanced_security(mint_address, chain_id):
             status = f"🟢 GÜVENLİ (Skor: {score})" if is_safe else f"🔴 RİSKLİ (Skor: {score})"
             
             if serial_dev_risk:
-                clustering_info = "⚠️ Şüpheli Geliştirici (Dev) Cüzdanı!"
+                clustering_info = "⚠️️ Şüpheli Geliştirici (Dev) Cüzdanı!"
             elif high_dev_share:
                 clustering_info = "⚠️ Yüksek Cüzdan Yoğunlaşması"
             else:
@@ -91,9 +90,8 @@ def check_smart_money_and_age(pair_data):
     pair_created_at = pair_data.get("pairCreatedAt", 0)
     current_time_ms = int(time.time() * 1000)
     
-    # En az 15 dakika açılış süresi kontrolü
     if pair_created_at > 0 and (current_time_ms - pair_created_at) < 900000:
-        return False, "⚠️️ Havuz Çok Yeni (<15 dk)"
+        return False, "⚠️ Havuz Çok Yeni (<15 dk)"
 
     txns = pair_data.get("txns", {}).get("h1", {})
     buys = txns.get("buys", 0)
@@ -108,6 +106,16 @@ def check_smart_money_and_age(pair_data):
 
 def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, security):
     base_score = 6.0
+    matched_narrative = None
+    
+    # 1. Narrative / Hikaye Algılama Kontrolü
+    symbol_upper = symbol.upper()
+    for kw in HOT_NARRATIVES:
+        if kw in symbol_upper:
+            base_score += 1.5
+            matched_narrative = f"🔥 HİKAYE EŞLEŞMESİ: #{kw} Trend Anlatısı"
+            break
+
     if volume > 100000:
         base_score += 1.5
     elif volume > 50000:
@@ -167,7 +175,7 @@ def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, s
         except Exception as e:
             print(f"OpenAI Hatası: {e}")
 
-    return numeric_score, f"{numeric_score}/10 🔥", gemini_analysis, gpt_narrative
+    return numeric_score, f"{numeric_score}/10 🔥", gemini_analysis, gpt_narrative, matched_narrative
 
 def get_filtered_memecoins():
     global scanned_count
@@ -243,7 +251,7 @@ def get_filtered_memecoins():
                     if not is_safe:
                         continue
 
-                    num_score, ai_score_str, gemini_eval, gpt_narrative = get_ai_score_and_narrative(
+                    num_score, ai_score_str, gemini_eval, gpt_narrative, matched_narrative = get_ai_score_and_narrative(
                         symbol, chain_id, volume, price_change, liquidity, security_status
                     )
 
@@ -271,6 +279,7 @@ def get_filtered_memecoins():
                         "ai_score": ai_score_str,
                         "gemini_eval": gemini_eval,
                         "gpt_narrative": gpt_narrative,
+                        "matched_narrative": matched_narrative,
                         "dex_url": url_link,
                     })
         except Exception as e:
@@ -290,7 +299,10 @@ def send_telegram_alert(coin):
         buy_url = f"https://t.me/MaestroSniperBot?start={coin['address']}"
         buy_btn_text = f"🚀 Maestro ile Al ({coin['chain']})"
 
+    narrative_line = f"{coin['matched_narrative']}\n\n" if coin.get("matched_narrative") else ""
+
     caption = (
+        narrative_line +
         "🔥 **AI GÜVEN & HYPE SKORU:** `" + str(coin['ai_score']) + "`\n\n" +
         "🌐 **Ağ:** `" + str(coin['chain']) + "` - 🪙 **Token:** $" + str(coin['symbol']) + "\n" +
         "📈 **1S Değişim:** %" + str(coin['price_change']) + " - 📊 **1S Hacim:** $" + f"{coin['volume']:,.0f}" + "\n" +
@@ -321,7 +333,6 @@ def send_telegram_alert(coin):
     except Exception as e:
         print(f"Telegram mesaj hatası: {e}")
 
-# Telegram Komut Dinleyici (/status ve /pnl)
 def check_telegram_commands():
     global last_update_id
     if not TELEGRAM_BOT_TOKEN:
@@ -347,7 +358,7 @@ def check_telegram_commands():
                         f"⏱️ **Çalışma Süresi:** {uptime_min} dakika\n"
                         f"🔍 **Taranan Havuz Sayısı:** {scanned_count}\n"
                         f"🎯 **Sinyal Atılan Token:** {len(seen_tokens)}\n"
-                        "🛡️ **Aktif Filtreler:** Min $25k Hacim | Min $8k Likidite | Min 15 Dk Yaş | Dev Risk Taraması"
+                        "🛡️ **Aktif Filtreler:** Min $25k Hacim | Min $8k Likidite | Min 15 Dk Yaş | Dev Risk | Narrative Check"
                     )
                     requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": status_msg, "parse_mode": "Markdown"})
 
@@ -384,17 +395,14 @@ def run_bot_loop():
     print("Multi-chain Interactive AI Sniper Bot döngüsü başlatıldı...")
     while True:
         try:
-            # Telegram komutlarını kontrol et
             check_telegram_commands()
-
-            # Token taraması yap
             coins = get_filtered_memecoins()
             for coin in coins[:3]:
                 send_telegram_alert(coin)
                 time.sleep(3)
         except Exception as e:
             print(f"Bot döngüsü hatası: {e}")
-        time.sleep(120)  # Tepki süresini artırmak için döngü süresi 2 dakikaya indirildi
+        time.sleep(120)
 
 if __name__ == "__main__":
     bot_thread = threading.Thread(target=run_bot_loop)
