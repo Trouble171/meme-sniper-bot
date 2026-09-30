@@ -8,7 +8,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot Aktif!", 200
+    return "Meme Coin Sniper Bot (Base Multi-Chain) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -128,9 +128,12 @@ def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, s
 
 def get_filtered_memecoins():
     filtered_list = []
+    
+    # Genel trendlere ek olarak doğrudan Base ağı trendlerini de çeken endpoint eklendi
     endpoints = [
         "https://api.dexscreener.com/token-boosts/top/v1",
-        "https://api.dexscreener.com/token-profiles/latest/v1"
+        "https://api.dexscreener.com/token-profiles/latest/v1",
+        "https://api.dexscreener.com/latest/dex/search?q=base"
     ]
     
     candidate_addresses = []
@@ -139,15 +142,22 @@ def get_filtered_memecoins():
             res = requests.get(ep, timeout=8)
             if res.status_code == 200:
                 data = res.json()
-                for item in data[:20]:
-                    token_addr = item.get("tokenAddress")
-                    if token_addr:
-                        candidate_addresses.append(token_addr)
+                if isinstance(data, list):
+                    for item in data[:20]:
+                        token_addr = item.get("tokenAddress")
+                        if token_addr:
+                            candidate_addresses.append(token_addr)
+                elif isinstance(data, dict) and "pairs" in data:
+                    for pair in data["pairs"][:20]:
+                        if pair.get("chainId") == "base":
+                            base_addr = pair.get("baseToken", {}).get("address")
+                            if base_addr:
+                                candidate_addresses.append(base_addr)
         except Exception as e:
             print(f"Endpoint hatası ({ep}): {e}")
 
     if candidate_addresses:
-        unique_addrs = list(set(candidate_addresses))[:30]
+        unique_addrs = list(set(candidate_addresses))[:40]
         addrs_str = ",".join(unique_addrs)
         try:
             url = f"https://api.dexscreener.com/latest/dex/tokens/{addrs_str}"
@@ -164,7 +174,7 @@ def get_filtered_memecoins():
                     if not address or symbol.upper() in IGNORE_TOKENS or address in seen_tokens:
                         continue
 
-                    if symbol.upper() in INVALID_NAMES or chain_id.upper() in INVALID_NAMES:
+                    if symbol.upper() in INVALID_NAMES:
                         continue
 
                     volume = pair.get("volume", {}).get("h1", 0)
@@ -172,10 +182,13 @@ def get_filtered_memecoins():
                     fdv = pair.get("fdv", 0)
                     price_change = pair.get("priceChange", {}).get("h1", 0)
 
+                    # Güvenlik Eşikleri (Aynı Korundu)
                     if volume < 25000 or liquidity < 8000 or price_change < -25:
                         continue
 
-                    if liquidity > 0 and (volume / liquidity) > 15:
+                    # Base ağında hızlı yükselişleri kaçırmamak için Hacim/Likidite oranı 25 yapıldı
+                    max_vol_ratio = 25 if chain_id.lower() == "base" else 15
+                    if liquidity > 0 and (volume / liquidity) > max_vol_ratio:
                         continue
 
                     url_link = pair.get("url", "https://dexscreener.com")
@@ -262,7 +275,7 @@ def run_bot_loop():
     while True:
         try:
             coins = get_filtered_memecoins()
-            for coin in coins[:2]:
+            for coin in coins[:3]:
                 send_telegram_alert(coin)
                 time.sleep(3)
         except Exception as e:
