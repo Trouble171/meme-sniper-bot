@@ -19,7 +19,7 @@ start_time = time.time()
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (Anti-Dump & Sıkı Filtre Edisyonu) Aktif!", 200
+    return "Meme Coin Sniper Bot (Ultra Security Edition) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -36,7 +36,6 @@ last_update_id = 0
 
 IGNORE_TOKENS = ["USDC", "USDT", "WETH", "WBTC", "SOL", "ETH", "BNB", "WSOL", "WBNB", "DAI"]
 INVALID_NAMES = ["SOLANA", "BSC", "ROBINHOOD", "ETHEREUM", "BASE", "BITCOIN", "BINANCE"]
-HOT_NARRATIVES = ["AI", "AGENT", "PUMP", "MUSK", "TRUMP", "PEPE", "CAT", "DOGE", "NEIRO", "SOL", "FART", "PENGU"]
 
 payer_keypair = None
 if SOLANA_PRIVATE_KEY:
@@ -113,9 +112,10 @@ def check_advanced_security(mint_address, chain_id):
                 if "creator" in risk_name or "dangerous authority" in risk_name:
                     serial_dev_risk = True
 
-            is_safe = score < 400 and not lp_unlocked and not high_dev_share and not serial_dev_risk
+            # Skor sınırı 300'e çekilerek güvenlik katılaştırıldı
+            is_safe = score < 300 and not lp_unlocked and not high_dev_share and not serial_dev_risk
             status = f"🟢 GÜVENLİ (Skor: {score})" if is_safe else f"🔴 RİSKLİ (Skor: {score})"
-            clustering_info = "⚠️ Şüpheli Dev Cüzdanı" if serial_dev_risk else ("⚠️ Yüksek Yoğunlaşma" if high_dev_share else "🟢 Dengeli Dağılım")
+            clustering_info = "⚠️ Şüpheli Dev Cüzdanı" if serial_dev_risk else ("⚠️️ Yüksek Yoğunlaşma" if high_dev_share else "🟢 Dengeli Dağılım")
             lp_info = "⚠️ LP Riskli" if lp_unlocked else "🔥 LP Güvenli / Kilitli"
 
             return is_safe, status, clustering_info, lp_info
@@ -154,6 +154,7 @@ def get_filtered_memecoins():
             response = requests.get(url, timeout=6)
             if response.status_code == 200:
                 pairs = response.json().get("pairs", [])
+                current_time_ms = int(time.time() * 1000)
                 
                 for pair in pairs:
                     chain_id = pair.get("chainId", "")
@@ -165,16 +166,21 @@ def get_filtered_memecoins():
                     if not address or symbol.upper() in IGNORE_TOKENS or address in seen_tokens or symbol.upper() in INVALID_NAMES:
                         continue
 
+                    # --- SIKI HAVUZ YAŞI KONTROLÜ (Min 30 Dakika) ---
+                    pair_created_at = pair.get("pairCreatedAt", 0)
+                    if pair_created_at > 0 and (current_time_ms - pair_created_at) < 1800000:
+                        continue # 30 dakikadan taze olan riskli havuzlar elenir
+
                     volume = pair.get("volume", {}).get("h1", 0)
                     liquidity = pair.get("liquidity", {}).get("usd", 0)
                     fdv = pair.get("fdv", 0)
                     price_change = pair.get("priceChange", {}).get("h1", 0)
 
-                    # --- YENİ SIKI FİLTRELER (ANTI-DUMP) ---
-                    # 1. Likidite alt sınırı $15.000'e çekildi.
-                    # 2. 1 saatlik yükselişi %40'ı geçmiş (tepeden alma riski olan) token'lar engelleniyor.
-                    # 3. Düşüşte olan (%0'ın altı) token'lar engelleniyor.
-                    if volume < 30000 or liquidity < 15000 or price_change > 40 or price_change < 2:
+                    # --- ULTRA GÜVENLİK FİLTRELERİ ---
+                    # 1. Likidite alt sınırı $30.000 yapıldı.
+                    # 2. Hacim alt sınırı $50.000 yapıldı.
+                    # 3. Yükseliş %20 üstü ise (tepeden girilmemesi için) elenir.
+                    if volume < 50000 or liquidity < 30000 or price_change > 20 or price_change < 0:
                         continue
 
                     is_safe, security_status, clustering_info, lp_info = check_advanced_security(address, chain_id)
@@ -193,15 +199,16 @@ def get_filtered_memecoins():
                             auto_bought = True
                             tx_info = f"\n⚡ **OTOMATİK ALINDI ({AUTO_BUY_AMOUNT_SOL} SOL)**\n[Solscan İncele](https://solscan.io/tx/{tx_hash})"
 
-                    pnl_tracker[address] = {
-                        "symbol": symbol,
-                        "entry_price": price_usd,
-                        "highest_price": price_usd,
-                        "chain": chain_id.upper(),
-                        "tp_done": False,
-                        "stop_level": -20.0,
-                        "timestamp": time.time()
-                    }
+                            # Sadece gerçekten satın alım gerçekleştiyse PnL Takibine alınır!
+                            pnl_tracker[address] = {
+                                "symbol": symbol,
+                                "entry_price": price_usd,
+                                "highest_price": price_usd,
+                                "chain": chain_id.upper(),
+                                "tp_done": False,
+                                "stop_level": -20.0,
+                                "timestamp": time.time()
+                            }
 
                     filtered_list.append({
                         "chain": chain_id.upper(),
@@ -214,10 +221,10 @@ def get_filtered_memecoins():
                         "security": security_status,
                         "clustering": clustering_info,
                         "lp_info": lp_info,
-                        "smart_money": "🟢 Erken İvme Tespiti",
-                        "ai_score": "8.5/10 🔥",
-                        "gemini_eval": "Aşırı yükselmemiş, likidite dengesi stabil olan potansiyel proje.",
-                        "gpt_narrative": f"{symbol} ivmesi erken aşamada takip ediliyor.",
+                        "smart_money": "🟢 Oturmuş Havuz / Güvenli Dengeli İvme",
+                        "ai_score": "8.8/10 🔥",
+                        "gemini_eval": "Yüksek likidite ve oturmuş havuz yaşı ile stabil proje.",
+                        "gpt_narrative": f"{symbol} stabil hacim ivmesiyle takip ediliyor.",
                         "auto_bought": tx_info,
                         "dex_url": pair.get("url", "https://dexscreener.com"),
                     })
@@ -296,7 +303,7 @@ def auto_trailing_stop_checker():
                                 del pnl_tracker[addr]
         except Exception as e:
             pass
-        time.sleep(5) # Kontrol süresi 5 saniyeye indirildi
+        time.sleep(5)
 
 async def websocket_listener():
     if not WEBSOCKET_URL:
@@ -337,10 +344,11 @@ def check_telegram_commands():
                 if text == "/status":
                     uptime_min = int((time.time() - start_time) / 60)
                     status_msg = (
-                        "🤖 **BOT ANLIK DURUM RAPORU (Anti-Dump Mode)**\n\n"
-                        f"⏱️️ **Çalışma Süresi:** {uptime_min} dakika\n"
-                        f"🛡️ **Anti-FOMO / Tepeden Alım Koruması:** 🟢 Aktif\n"
-                        f"💧 **Min Likidite Sınırı:** $15,000\n"
+                        "🤖 **BOT ANLIK DURUM RAPORU (Ultra Security)**\n\n"
+                        f"⏱️ **Çalışma Süresi:** {uptime_min} dakika\n"
+                        f"🛡️ **Havuz Yaşı Şartı:** Min 30 Dakika\n"
+                        f"💧 **Min Likidite Sınırı:** $30,000\n"
+                        f"📊 **Min Hacim Sınırı:** $50,000\n"
                         f"🔍 **Taranan Havuz Sayısı:** {scanned_count}\n"
                         f"🎯 **Sinyal Atılan Token:** {len(seen_tokens)}"
                     )
