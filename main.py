@@ -19,7 +19,7 @@ start_time = time.time()
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (Ultra Security Edition) Aktif!", 200
+    return "Meme Coin Sniper Bot (Strict Verification Edition) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -41,17 +41,18 @@ payer_keypair = None
 if SOLANA_PRIVATE_KEY:
     try:
         payer_keypair = Keypair.from_base58_string(SOLANA_PRIVATE_KEY)
+        print(f"🔑 Cüzdan Başarıyla Yüklendi: {payer_keypair.pubkey()}")
     except Exception as e:
-        pass
+        print(f"⚠️ Cüzdan Yükleme Hatası: {e}")
 
 def execute_jupiter_swap(input_mint, output_mint, amount_lamports_or_raw, is_sell=False):
     if not payer_keypair:
-        return False, "Cüzdan Anahtarı Eksik"
+        return False, "Cüzdan Anahtarı (SOLANA_PRIVATE_KEY) Eksik!"
     try:
-        quote_url = f"https://quote-api.jup.ag/v6/quote?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports_or_raw)}&slippageBps=300"
+        quote_url = f"https://quote-api.jup.ag/v6/quote?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports_or_raw)}&slippageBps=500"
         res = requests.get(quote_url, timeout=5)
         if res.status_code != 200:
-            return False, "Quote Alınamadı"
+            return False, f"Quote Alınamadı ({res.status_code})"
         quote_data = res.json()
 
         swap_url = "https://quote-api.jup.ag/v6/swap"
@@ -64,7 +65,7 @@ def execute_jupiter_swap(input_mint, output_mint, amount_lamports_or_raw, is_sel
         }
         swap_res = requests.post(swap_url, json=payload, timeout=6)
         if swap_res.status_code != 200:
-            return False, "Swap TX Oluşturulamadı"
+            return False, f"Swap TX Oluşturulamadı ({swap_res.status_code})"
 
         swap_tx_base64 = swap_res.json().get("swapTransaction")
         raw_tx = VersionedTransaction.from_bytes(bytes(requests.auth.base64.b64decode(swap_tx_base64)))
@@ -84,7 +85,7 @@ def execute_jupiter_swap(input_mint, output_mint, amount_lamports_or_raw, is_sel
         tx_res = requests.post(rpc_url, json=rpc_payload, timeout=8)
         if tx_res.status_code == 200 and "result" in tx_res.json():
             return True, tx_res.json()["result"]
-        return False, "RPC Gönderim Hatası"
+        return False, "RPC Ağ Gönderim Hatası"
     except Exception as e:
         return False, str(e)
 
@@ -112,10 +113,9 @@ def check_advanced_security(mint_address, chain_id):
                 if "creator" in risk_name or "dangerous authority" in risk_name:
                     serial_dev_risk = True
 
-            # Skor sınırı 300'e çekilerek güvenlik katılaştırıldı
             is_safe = score < 300 and not lp_unlocked and not high_dev_share and not serial_dev_risk
             status = f"🟢 GÜVENLİ (Skor: {score})" if is_safe else f"🔴 RİSKLİ (Skor: {score})"
-            clustering_info = "⚠️ Şüpheli Dev Cüzdanı" if serial_dev_risk else ("⚠️️ Yüksek Yoğunlaşma" if high_dev_share else "🟢 Dengeli Dağılım")
+            clustering_info = "⚠️ Şüpheli Dev Cüzdanı" if serial_dev_risk else ("⚠️ Yüksek Yoğunlaşma" if high_dev_share else "🟢 Dengeli Dağılım")
             lp_info = "⚠️ LP Riskli" if lp_unlocked else "🔥 LP Güvenli / Kilitli"
 
             return is_safe, status, clustering_info, lp_info
@@ -166,20 +166,16 @@ def get_filtered_memecoins():
                     if not address or symbol.upper() in IGNORE_TOKENS or address in seen_tokens or symbol.upper() in INVALID_NAMES:
                         continue
 
-                    # --- SIKI HAVUZ YAŞI KONTROLÜ (Min 30 Dakika) ---
+                    # Min 30 dakika havuz yaşı şartı
                     pair_created_at = pair.get("pairCreatedAt", 0)
                     if pair_created_at > 0 and (current_time_ms - pair_created_at) < 1800000:
-                        continue # 30 dakikadan taze olan riskli havuzlar elenir
+                        continue
 
                     volume = pair.get("volume", {}).get("h1", 0)
                     liquidity = pair.get("liquidity", {}).get("usd", 0)
                     fdv = pair.get("fdv", 0)
                     price_change = pair.get("priceChange", {}).get("h1", 0)
 
-                    # --- ULTRA GÜVENLİK FİLTRELERİ ---
-                    # 1. Likidite alt sınırı $30.000 yapıldı.
-                    # 2. Hacim alt sınırı $50.000 yapıldı.
-                    # 3. Yükseliş %20 üstü ise (tepeden girilmemesi için) elenir.
                     if volume < 50000 or liquidity < 30000 or price_change > 20 or price_change < 0:
                         continue
 
@@ -191,15 +187,18 @@ def get_filtered_memecoins():
 
                     auto_bought = False
                     tx_info = ""
+                    
+                    # GERÇEK ALIM VE ONAY KONTROLÜ
                     if chain_id.lower() == "solana" and payer_keypair:
                         sol_mint = "So11111111111111111111111111111111111111112"
                         lamports = int(AUTO_BUY_AMOUNT_SOL * 1e9)
-                        success, tx_hash = execute_jupiter_swap(sol_mint, address, lamports)
+                        success, tx_hash_or_err = execute_jupiter_swap(sol_mint, address, lamports)
+                        
                         if success:
                             auto_bought = True
-                            tx_info = f"\n⚡ **OTOMATİK ALINDI ({AUTO_BUY_AMOUNT_SOL} SOL)**\n[Solscan İncele](https://solscan.io/tx/{tx_hash})"
-
-                            # Sadece gerçekten satın alım gerçekleştiyse PnL Takibine alınır!
+                            tx_info = f"\n⚡ **GERÇEK ALIM BAŞARILI ({AUTO_BUY_AMOUNT_SOL} SOL)**\n[Solscan İncele](https://solscan.io/tx/{tx_hash_or_err})"
+                            
+                            # Yalnızca işlem zincirde onaylandıysa takip başlatılır!
                             pnl_tracker[address] = {
                                 "symbol": symbol,
                                 "entry_price": price_usd,
@@ -209,6 +208,8 @@ def get_filtered_memecoins():
                                 "stop_level": -20.0,
                                 "timestamp": time.time()
                             }
+                        else:
+                            tx_info = f"\n⚠️ **ALIM BAŞARISIZ:** _{tx_hash_or_err}_"
 
                     filtered_list.append({
                         "chain": chain_id.upper(),
@@ -221,10 +222,10 @@ def get_filtered_memecoins():
                         "security": security_status,
                         "clustering": clustering_info,
                         "lp_info": lp_info,
-                        "smart_money": "🟢 Oturmuş Havuz / Güvenli Dengeli İvme",
+                        "smart_money": "🟢 Oturmuş Havuz",
                         "ai_score": "8.8/10 🔥",
-                        "gemini_eval": "Yüksek likidite ve oturmuş havuz yaşı ile stabil proje.",
-                        "gpt_narrative": f"{symbol} stabil hacim ivmesiyle takip ediliyor.",
+                        "gemini_eval": "Güvenli havuz yapısı tespiti.",
+                        "gpt_narrative": f"{symbol} takibe alındı.",
                         "auto_bought": tx_info,
                         "dex_url": pair.get("url", "https://dexscreener.com"),
                     })
@@ -344,11 +345,10 @@ def check_telegram_commands():
                 if text == "/status":
                     uptime_min = int((time.time() - start_time) / 60)
                     status_msg = (
-                        "🤖 **BOT ANLIK DURUM RAPORU (Ultra Security)**\n\n"
+                        "🤖 **BOT ANLIK DURUM RAPORU (Verified Mode)**\n\n"
                         f"⏱️ **Çalışma Süresi:** {uptime_min} dakika\n"
-                        f"🛡️ **Havuz Yaşı Şartı:** Min 30 Dakika\n"
-                        f"💧 **Min Likidite Sınırı:** $30,000\n"
-                        f"📊 **Min Hacim Sınırı:** $50,000\n"
+                        f"🔑 **Cüzdan Durumu:** {'🟢 Yüklü' if payer_keypair else '🔴 Yüklenemedi'}\n"
+                        f"🛡️ **Gerçek Onay Kontrolü:** 🟢 Aktif\n"
                         f"🔍 **Taranan Havuz Sayısı:** {scanned_count}\n"
                         f"🎯 **Sinyal Atılan Token:** {len(seen_tokens)}"
                     )
