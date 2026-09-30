@@ -8,7 +8,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (Base Multi-Chain) Aktif!", 200
+    return "Meme Coin Sniper Bot (Pro Safety + PnL Tracking) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -16,10 +16,12 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 seen_tokens = set()
+pnl_tracker = {}  # Madde 5: PnL Performans Takip Hafızası
 
 IGNORE_TOKENS = ["USDC", "USDT", "WETH", "WBTC", "SOL", "ETH", "BNB", "WSOL", "WBNB", "DAI"]
 INVALID_NAMES = ["SOLANA", "BSC", "ROBINHOOD", "ETHEREUM", "BASE", "BITCOIN", "BINANCE"]
 
+# 1 & 2. Gelişmiş RugCheck, LP Kilit Süresi (Lock Duration) Kontrolü
 def check_advanced_security(mint_address, chain_id):
     if chain_id.lower() != "solana":
         return True, "🟢 EVM Güvenlik Temiz", "Dengeli Dağılım", "🔥 LP Durumu Normal"
@@ -30,6 +32,8 @@ def check_advanced_security(mint_address, chain_id):
             data = response.json()
             score = data.get("score", 0)
             risks = data.get("risks", [])
+            lockers = data.get("lpLockers", [])
+            
             high_dev_share = False
             lp_unlocked = False
             
@@ -40,10 +44,27 @@ def check_advanced_security(mint_address, chain_id):
                 if "low liquidity" in risk_name or "unlocked liquidity" in risk_name:
                     lp_unlocked = True
 
+            # Madde 2: En az 30 günlük kilit süresi kontrolü (2,592,000 saniye = 30 gün)
+            long_term_lock = False
+            if lockers:
+                for locker in lockers:
+                    unlock_time = locker.get("unlockTime", 0)
+                    current_time = int(time.time())
+                    if unlock_time - current_time >= 2592000:
+                        long_term_lock = True
+                        break
+
             is_safe = score < 600 and not lp_unlocked and not high_dev_share
             status = f"🟢 GÜVENLİ (Skor: {score})" if is_safe else f"🔴 RİSKLİ (Skor: {score})"
             clustering_info = "⚠️ Dev/Yüksek Cüzdan Payı Var!" if high_dev_share else "🟢 Dengeli Cüzdan Dağılımı"
-            lp_info = "⚠️ LP Kilitli Değil / Riskli" if lp_unlocked else "🔥 LP Yakılmış / Kilitli"
+            
+            if lp_unlocked:
+                lp_info = "⚠️ LP Kilitli Değil / Riskli"
+            elif long_term_lock:
+                lp_info = "🔒 LP En Az 30 Gün Kilitli / Güvenli"
+            else:
+                lp_info = "🔥 LP Yakılmış veya Kısa Süreli Kilitli"
+
             return is_safe, status, clustering_info, lp_info
             
         return False, "⚠️ Güvenlik Verisi Alınamadı", "Bilinmiyor", "Bilinmiyor"
@@ -51,17 +72,25 @@ def check_advanced_security(mint_address, chain_id):
         print(f"RugCheck Hatası: {e}")
         return False, "⚠️ Güvenlik Taraması Yapılamadı", "Bilinmiyor", "Bilinmiyor"
 
-def check_smart_money(pair_data):
+# 3. Min 15 Dk Havuz Yaşı & Smart Money Kontrolü
+def check_smart_money_and_age(pair_data):
+    pair_created_at = pair_data.get("pairCreatedAt", 0)
+    current_time_ms = int(time.time() * 1000)
+    
+    # En az 15 dakika (900,000 ms) açılış süresi kontrolü
+    if pair_created_at > 0 and (current_time_ms - pair_created_at) < 900000:
+        return False, "⚠️ Havuz Çok Yeni (<15 dk)"
+
     txns = pair_data.get("txns", {}).get("h1", {})
     buys = txns.get("buys", 0)
     sells = txns.get("sells", 0)
     volume = pair_data.get("volume", {}).get("h1", 0)
     
     if volume > 80000 and buys > (sells * 1.3):
-        return "🐋 Güçlü Akıllı Para (Smart Money) Alım Baskısı!"
+        return True, "🐋 Güçlü Akıllı Para (Smart Money) Alım Baskısı!"
     elif volume > 30000 and buys > 60:
-        return "👀 Erken Aşama Balina Girişi Var"
-    return "⚪ Standart İşlem Hacmi"
+        return True, "👀 Erken Aşama Balina Girişi Var"
+    return True, "⚪ Standart İşlem Hacmi"
 
 def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, security):
     base_score = 6.0
@@ -128,8 +157,6 @@ def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, s
 
 def get_filtered_memecoins():
     filtered_list = []
-    
-    # Genel trendlere ek olarak doğrudan Base ağı trendlerini de çeken endpoint eklendi
     endpoints = [
         "https://api.dexscreener.com/token-boosts/top/v1",
         "https://api.dexscreener.com/token-profiles/latest/v1",
@@ -170,6 +197,7 @@ def get_filtered_memecoins():
                     base_token = pair.get("baseToken", {})
                     symbol = base_token.get("symbol", "UNKNOWN")
                     address = base_token.get("address", "")
+                    price_usd = float(pair.get("priceUsd", 0))
 
                     if not address or symbol.upper() in IGNORE_TOKENS or address in seen_tokens:
                         continue
@@ -177,16 +205,19 @@ def get_filtered_memecoins():
                     if symbol.upper() in INVALID_NAMES:
                         continue
 
+                    # Madde 3: Min 15 Dk Havuz Yaşı Filtresi
+                    is_old_enough, smart_money_status = check_smart_money_and_age(pair)
+                    if not is_old_enough:
+                        continue
+
                     volume = pair.get("volume", {}).get("h1", 0)
                     liquidity = pair.get("liquidity", {}).get("usd", 0)
                     fdv = pair.get("fdv", 0)
                     price_change = pair.get("priceChange", {}).get("h1", 0)
 
-                    # Güvenlik Eşikleri (Aynı Korundu)
                     if volume < 25000 or liquidity < 8000 or price_change < -25:
                         continue
 
-                    # Base ağında hızlı yükselişleri kaçırmamak için Hacim/Likidite oranı 25 yapıldı
                     max_vol_ratio = 25 if chain_id.lower() == "base" else 15
                     if liquidity > 0 and (volume / liquidity) > max_vol_ratio:
                         continue
@@ -197,13 +228,19 @@ def get_filtered_memecoins():
                     if not is_safe:
                         continue
 
-                    smart_money_status = check_smart_money(pair)
-
                     num_score, ai_score_str, gemini_eval, gpt_narrative = get_ai_score_and_narrative(
                         symbol, chain_id, volume, price_change, liquidity, security_status
                     )
 
                     seen_tokens.add(address)
+
+                    # Madde 5: Sinyal Atılan Token'ı Fiyatı ile PnL Takibine Al
+                    pnl_tracker[address] = {
+                        "symbol": symbol,
+                        "entry_price": price_usd,
+                        "timestamp": time.time()
+                    }
+                    print(f"📈 PnL Takibi Başlatıldı: ${symbol} @${price_usd:.8f}")
 
                     filtered_list.append({
                         "chain": chain_id.upper(),
@@ -271,7 +308,7 @@ def send_telegram_alert(coin):
         print(f"Telegram mesaj hatası: {e}")
 
 def run_bot_loop():
-    print("Multi-chain AI Sniper Bot döngüsü başlatıldı...")
+    print("Multi-chain Pro AI Sniper Bot döngüsü başlatıldı...")
     while True:
         try:
             coins = get_filtered_memecoins()
