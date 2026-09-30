@@ -1,3 +1,5 @@
-Flask
+flask
 requests
 websockets
+solders
+solana
