@@ -6,9 +6,11 @@ from flask import Flask
 
 app = Flask(__name__)
 
+start_time = time.time()
+
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (Pro Safety + PnL Tracking) Aktif!", 200
+    return "Meme Coin Sniper Bot (Dev Check + Interactive Commands) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -16,12 +18,14 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 seen_tokens = set()
-pnl_tracker = {}  # Madde 5: PnL Performans Takip Hafızası
+pnl_tracker = {}  # {address: {symbol, entry_price, chain, timestamp}}
+scanned_count = 0
+last_update_id = 0
 
 IGNORE_TOKENS = ["USDC", "USDT", "WETH", "WBTC", "SOL", "ETH", "BNB", "WSOL", "WBNB", "DAI"]
 INVALID_NAMES = ["SOLANA", "BSC", "ROBINHOOD", "ETHEREUM", "BASE", "BITCOIN", "BINANCE"]
 
-# 1 & 2. Gelişmiş RugCheck, LP Kilit Süresi (Lock Duration) Kontrolü
+# 1, 2 & 3. Gelişmiş RugCheck, LP Kilit Süresi ve Dev Cüzdan Risk Taraması
 def check_advanced_security(mint_address, chain_id):
     if chain_id.lower() != "solana":
         return True, "🟢 EVM Güvenlik Temiz", "Dengeli Dağılım", "🔥 LP Durumu Normal"
@@ -33,9 +37,11 @@ def check_advanced_security(mint_address, chain_id):
             score = data.get("score", 0)
             risks = data.get("risks", [])
             lockers = data.get("lpLockers", [])
+            creator = data.get("creator", "")
             
             high_dev_share = False
             lp_unlocked = False
+            serial_dev_risk = False
             
             for risk in risks:
                 risk_name = risk.get("name", "").lower()
@@ -43,8 +49,11 @@ def check_advanced_security(mint_address, chain_id):
                     high_dev_share = True
                 if "low liquidity" in risk_name or "unlocked liquidity" in risk_name:
                     lp_unlocked = True
+                # Seri Rugpull / Çöp Token Üreticisi Cüzdan Taraması
+                if "creator" in risk_name or "dangerous authority" in risk_name:
+                    serial_dev_risk = True
 
-            # Madde 2: En az 30 günlük kilit süresi kontrolü (2,592,000 saniye = 30 gün)
+            # En az 30 günlük kilit süresi kontrolü
             long_term_lock = False
             if lockers:
                 for locker in lockers:
@@ -54,9 +63,15 @@ def check_advanced_security(mint_address, chain_id):
                         long_term_lock = True
                         break
 
-            is_safe = score < 600 and not lp_unlocked and not high_dev_share
+            is_safe = score < 600 and not lp_unlocked and not high_dev_share and not serial_dev_risk
             status = f"🟢 GÜVENLİ (Skor: {score})" if is_safe else f"🔴 RİSKLİ (Skor: {score})"
-            clustering_info = "⚠️ Dev/Yüksek Cüzdan Payı Var!" if high_dev_share else "🟢 Dengeli Cüzdan Dağılımı"
+            
+            if serial_dev_risk:
+                clustering_info = "⚠️ Şüpheli Geliştirici (Dev) Cüzdanı!"
+            elif high_dev_share:
+                clustering_info = "⚠️ Yüksek Cüzdan Yoğunlaşması"
+            else:
+                clustering_info = "🟢 Dengeli Cüzdan Dağılımı"
             
             if lp_unlocked:
                 lp_info = "⚠️ LP Kilitli Değil / Riskli"
@@ -72,14 +87,13 @@ def check_advanced_security(mint_address, chain_id):
         print(f"RugCheck Hatası: {e}")
         return False, "⚠️ Güvenlik Taraması Yapılamadı", "Bilinmiyor", "Bilinmiyor"
 
-# 3. Min 15 Dk Havuz Yaşı & Smart Money Kontrolü
 def check_smart_money_and_age(pair_data):
     pair_created_at = pair_data.get("pairCreatedAt", 0)
     current_time_ms = int(time.time() * 1000)
     
-    # En az 15 dakika (900,000 ms) açılış süresi kontrolü
+    # En az 15 dakika açılış süresi kontrolü
     if pair_created_at > 0 and (current_time_ms - pair_created_at) < 900000:
-        return False, "⚠️ Havuz Çok Yeni (<15 dk)"
+        return False, "⚠️️ Havuz Çok Yeni (<15 dk)"
 
     txns = pair_data.get("txns", {}).get("h1", {})
     buys = txns.get("buys", 0)
@@ -156,6 +170,7 @@ def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, s
     return numeric_score, f"{numeric_score}/10 🔥", gemini_analysis, gpt_narrative
 
 def get_filtered_memecoins():
+    global scanned_count
     filtered_list = []
     endpoints = [
         "https://api.dexscreener.com/token-boosts/top/v1",
@@ -185,6 +200,7 @@ def get_filtered_memecoins():
 
     if candidate_addresses:
         unique_addrs = list(set(candidate_addresses))[:40]
+        scanned_count += len(unique_addrs)
         addrs_str = ",".join(unique_addrs)
         try:
             url = f"https://api.dexscreener.com/latest/dex/tokens/{addrs_str}"
@@ -205,7 +221,6 @@ def get_filtered_memecoins():
                     if symbol.upper() in INVALID_NAMES:
                         continue
 
-                    # Madde 3: Min 15 Dk Havuz Yaşı Filtresi
                     is_old_enough, smart_money_status = check_smart_money_and_age(pair)
                     if not is_old_enough:
                         continue
@@ -234,13 +249,12 @@ def get_filtered_memecoins():
 
                     seen_tokens.add(address)
 
-                    # Madde 5: Sinyal Atılan Token'ı Fiyatı ile PnL Takibine Al
                     pnl_tracker[address] = {
                         "symbol": symbol,
                         "entry_price": price_usd,
+                        "chain": chain_id.upper(),
                         "timestamp": time.time()
                     }
-                    print(f"📈 PnL Takibi Başlatıldı: ${symbol} @${price_usd:.8f}")
 
                     filtered_list.append({
                         "chain": chain_id.upper(),
@@ -307,17 +321,80 @@ def send_telegram_alert(coin):
     except Exception as e:
         print(f"Telegram mesaj hatası: {e}")
 
+# Telegram Komut Dinleyici (/status ve /pnl)
+def check_telegram_commands():
+    global last_update_id
+    if not TELEGRAM_BOT_TOKEN:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+    try:
+        res = requests.get(url, params={"offset": last_update_id + 1, "timeout": 2}, timeout=5)
+        if res.status_code == 200:
+            updates = res.json().get("result", [])
+            for update in updates:
+                last_update_id = update["update_id"]
+                message = update.get("message", {})
+                text = message.get("text", "").strip()
+                chat_id = str(message.get("chat", {}).get("id", ""))
+
+                if str(chat_id) != str(TELEGRAM_CHAT_ID):
+                    continue
+
+                if text == "/status":
+                    uptime_min = int((time.time() - start_time) / 60)
+                    status_msg = (
+                        "🤖 **BOT ANLIK DURUM RAPORU**\n\n"
+                        f"⏱️ **Çalışma Süresi:** {uptime_min} dakika\n"
+                        f"🔍 **Taranan Havuz Sayısı:** {scanned_count}\n"
+                        f"🎯 **Sinyal Atılan Token:** {len(seen_tokens)}\n"
+                        "🛡️ **Aktif Filtreler:** Min $25k Hacim | Min $8k Likidite | Min 15 Dk Yaş | Dev Risk Taraması"
+                    )
+                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": status_msg, "parse_mode": "Markdown"})
+
+                elif text == "/pnl":
+                    if not pnl_tracker:
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": "📊 Henüz PnL takibinde olan token yok."})
+                        continue
+
+                    pnl_msg = "📈 **SİNYAL PERFORMANS & PnL TAKİBİ**\n\n"
+                    addrs = list(pnl_tracker.keys())[:20]
+                    addrs_str = ",".join(addrs)
+                    
+                    try:
+                        res_dex = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{addrs_str}", timeout=5)
+                        if res_dex.status_code == 200:
+                            pairs = res_dex.json().get("pairs", [])
+                            prices = {p.get("baseToken", {}).get("address"): float(p.get("priceUsd", 0)) for p in pairs}
+
+                            for addr, data in pnl_tracker.items():
+                                entry = data["entry_price"]
+                                current = prices.get(addr, entry)
+                                if entry > 0:
+                                    diff = ((current - entry) / entry) * 100
+                                    icon = "🟢" if diff >= 0 else "🔴"
+                                    pnl_msg += f"{icon} **${data['symbol']}** ({data['chain']}): %{diff:+.2f}\n"
+
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": pnl_msg, "parse_mode": "Markdown"})
+                    except Exception as e:
+                        print(f"PnL sorgu hatası: {e}")
+    except Exception as e:
+        pass
+
 def run_bot_loop():
-    print("Multi-chain Pro AI Sniper Bot döngüsü başlatıldı...")
+    print("Multi-chain Interactive AI Sniper Bot döngüsü başlatıldı...")
     while True:
         try:
+            # Telegram komutlarını kontrol et
+            check_telegram_commands()
+
+            # Token taraması yap
             coins = get_filtered_memecoins()
             for coin in coins[:3]:
                 send_telegram_alert(coin)
                 time.sleep(3)
         except Exception as e:
             print(f"Bot döngüsü hatası: {e}")
-        time.sleep(300)
+        time.sleep(120)  # Tepki süresini artırmak için döngü süresi 2 dakikaya indirildi
 
 if __name__ == "__main__":
     bot_thread = threading.Thread(target=run_bot_loop)
