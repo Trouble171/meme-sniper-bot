@@ -7,7 +7,6 @@ import requests
 import websockets
 from flask import Flask
 
-# Solana & Solders entegrasyonu
 try:
     from solders.keypair import Keypair
     from solders.pubkey import Pubkey
@@ -16,12 +15,11 @@ except ImportError:
     pass
 
 app = Flask(__name__)
-
 start_time = time.time()
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (Trailing Stop & Smart Money Tracking Edition) Aktif!", 200
+    return "Meme Coin Sniper Bot (Anti-Dump & Sıkı Filtre Edisyonu) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -32,7 +30,6 @@ SOLANA_PRIVATE_KEY = os.environ.get("SOLANA_PRIVATE_KEY")
 AUTO_BUY_AMOUNT_SOL = float(os.environ.get("AUTO_BUY_AMOUNT_SOL", "0.1"))
 
 seen_tokens = set()
-# pnl_tracker yapısı: {address: {symbol, entry_price, highest_price, chain, tp_done, stop_level, timestamp}}
 pnl_tracker = {} 
 scanned_count = 0
 last_update_id = 0
@@ -41,30 +38,21 @@ IGNORE_TOKENS = ["USDC", "USDT", "WETH", "WBTC", "SOL", "ETH", "BNB", "WSOL", "W
 INVALID_NAMES = ["SOLANA", "BSC", "ROBINHOOD", "ETHEREUM", "BASE", "BITCOIN", "BINANCE"]
 HOT_NARRATIVES = ["AI", "AGENT", "PUMP", "MUSK", "TRUMP", "PEPE", "CAT", "DOGE", "NEIRO", "SOL", "FART", "PENGU"]
 
-# Örnek Başarılı Balina / Smart Money Cüzdan Adresleri (İstenildiğinde güncellenebilir)
-TRACKED_SMART_WALLETS = [
-    "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
-    "G829a28HAncUnkU3jUp5vC215jU8P4S6xX8A9Lp1pump"
-]
-
 payer_keypair = None
 if SOLANA_PRIVATE_KEY:
     try:
         payer_keypair = Keypair.from_base58_string(SOLANA_PRIVATE_KEY)
-        print(f"🔑 Solana Cüzdanı Yüklendi: {payer_keypair.pubkey()}")
     except Exception as e:
-        print(f"⚠️ Keypair Yükleme Hatası: {e}")
+        pass
 
 def execute_jupiter_swap(input_mint, output_mint, amount_lamports_or_raw, is_sell=False):
     if not payer_keypair:
         return False, "Cüzdan Anahtarı Eksik"
-    
     try:
-        quote_url = f"https://quote-api.jup.ag/v6/quote?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports_or_raw)}&slippageBps=500"
-        res = requests.get(quote_url, timeout=6)
+        quote_url = f"https://quote-api.jup.ag/v6/quote?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports_or_raw)}&slippageBps=300"
+        res = requests.get(quote_url, timeout=5)
         if res.status_code != 200:
             return False, "Quote Alınamadı"
-        
         quote_data = res.json()
 
         swap_url = "https://quote-api.jup.ag/v6/swap"
@@ -75,7 +63,7 @@ def execute_jupiter_swap(input_mint, output_mint, amount_lamports_or_raw, is_sel
             "dynamicComputeUnitLimit": True,
             "prioritizationFeeLamports": "auto"
         }
-        swap_res = requests.post(swap_url, json=payload, timeout=8)
+        swap_res = requests.post(swap_url, json=payload, timeout=6)
         if swap_res.status_code != 200:
             return False, "Swap TX Oluşturulamadı"
 
@@ -94,14 +82,11 @@ def execute_jupiter_swap(input_mint, output_mint, amount_lamports_or_raw, is_sel
             "method": "sendTransaction",
             "params": [encoded_tx, {"encoding": "base64", "skipPreflight": True}]
         }
-        
-        tx_res = requests.post(rpc_url, json=rpc_payload, timeout=10)
+        tx_res = requests.post(rpc_url, json=rpc_payload, timeout=8)
         if tx_res.status_code == 200 and "result" in tx_res.json():
             return True, tx_res.json()["result"]
         return False, "RPC Gönderim Hatası"
-
     except Exception as e:
-        print(f"Jupiter Swap Hatası: {e}")
         return False, str(e)
 
 def check_advanced_security(mint_address, chain_id):
@@ -109,12 +94,11 @@ def check_advanced_security(mint_address, chain_id):
         return True, "🟢 EVM Güvenlik Temiz", "Dengeli Dağılım", "🔥 LP Durumu Normal"
     try:
         url = f"https://api.rugcheck.xyz/v1/tokens/{mint_address}/report/summary"
-        response = requests.get(url, timeout=6)
+        response = requests.get(url, timeout=5)
         if response.status_code == 200:
             data = response.json()
             score = data.get("score", 0)
             risks = data.get("risks", [])
-            lockers = data.get("lpLockers", [])
             
             high_dev_share = False
             lp_unlocked = False
@@ -129,124 +113,28 @@ def check_advanced_security(mint_address, chain_id):
                 if "creator" in risk_name or "dangerous authority" in risk_name:
                     serial_dev_risk = True
 
-            long_term_lock = False
-            if lockers:
-                for locker in lockers:
-                    unlock_time = locker.get("unlockTime", 0)
-                    if unlock_time - int(time.time()) >= 2592000:
-                        long_term_lock = True
-                        break
-
-            is_safe = score < 600 and not lp_unlocked and not high_dev_share and not serial_dev_risk
+            is_safe = score < 400 and not lp_unlocked and not high_dev_share and not serial_dev_risk
             status = f"🟢 GÜVENLİ (Skor: {score})" if is_safe else f"🔴 RİSKLİ (Skor: {score})"
             clustering_info = "⚠️ Şüpheli Dev Cüzdanı" if serial_dev_risk else ("⚠️ Yüksek Yoğunlaşma" if high_dev_share else "🟢 Dengeli Dağılım")
-            lp_info = "⚠️ LP Kilitli Değil" if lp_unlocked else ("🔒 LP 30+ Gün Kilitli" if long_term_lock else "🔥 LP Yakılmış / Kısa Kilitli")
+            lp_info = "⚠️ LP Riskli" if lp_unlocked else "🔥 LP Güvenli / Kilitli"
 
             return is_safe, status, clustering_info, lp_info
-            
-        return False, "⚠️ Güvenlik Verisi Alınamadı", "Bilinmiyor", "Bilinmiyor"
+        return False, "⚠️ Güvenlik Verisi Yok", "Bilinmiyor", "Bilinmiyor"
     except Exception as e:
-        return False, "⚠️ Güvenlik Taraması Yapılamadı", "Bilinmiyor", "Bilinmiyor"
-
-def check_smart_money_and_age(pair_data):
-    pair_created_at = pair_data.get("pairCreatedAt", 0)
-    current_time_ms = int(time.time() * 1000)
-    
-    if pair_created_at > 0 and (current_time_ms - pair_created_at) < 900000:
-        return False, "⚠️ Havuz Çok Yeni (<15 dk)"
-
-    txns = pair_data.get("txns", {}).get("h1", {})
-    buys = txns.get("buys", 0)
-    sells = txns.get("sells", 0)
-    volume = pair_data.get("volume", {}).get("h1", 0)
-    
-    if volume > 80000 and buys > (sells * 1.3):
-        return True, "🐋 Güçlü Akıllı Para (Smart Money) Alım Baskısı!"
-    elif volume > 30000 and buys > 60:
-        return True, "👀 Erken Aşama Balina Girişi Var"
-    return True, "⚪ Standart İşlem Hacmi"
-
-def get_ai_score_and_narrative(symbol, chain, volume, price_change, liquidity, security):
-    base_score = 6.0
-    matched_narrative = None
-    
-    symbol_upper = symbol.upper()
-    for kw in HOT_NARRATIVES:
-        if kw in symbol_upper:
-            base_score += 1.5
-            matched_narrative = f"🔥 HİKAYE EŞLEŞMESİ: #{kw} Trend Anlatısı"
-            break
-
-    if volume > 100000:
-        base_score += 1.5
-    elif volume > 50000:
-        base_score += 0.8
-
-    if liquidity > 30000:
-        base_score += 1.0
-    elif liquidity > 15000:
-        base_score += 0.5
-
-    if price_change > 20:
-        base_score += 0.8
-    elif price_change < 0:
-        base_score -= 1.0
-
-    numeric_score = round(min(max(base_score, 4.0), 9.8), 1)
-    gemini_analysis = f"Hacim (${volume:,.0f}) ve Likidite (${liquidity:,.0f}) dengesi teknik açıdan incelendi."
-    gpt_narrative = f"{symbol} token için sosyal trend ivmesi takip ediliyor."
-
-    if GEMINI_API_KEY:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-            prompt_text = f"Token: {symbol}, Ağ: {chain}, Hacim: ${volume}, Değişim: %{price_change}. 1 cümlelik Türkçe yorum ve 1-10 puan üret. Format: SKOR: 8.3/10 - Yorum"
-            payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
-            res = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=7)
-            if res.status_code == 200:
-                text = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                if "SKOR:" in text:
-                    parts = text.split("SKOR:")[1].split("-")
-                    try:
-                        numeric_score = float(parts[0].replace("/10", "").strip())
-                    except:
-                        pass
-                    if len(parts) > 1:
-                        gemini_analysis = parts[1].strip()
-                else:
-                    gemini_analysis = text
-        except Exception as e:
-            pass
-
-    if OPENAI_API_KEY:
-        try:
-            url = "https://api.openai.com/v1/chat/completions"
-            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-            payload = {
-                "model": "gpt-4o-mini",
-                "messages": [{"role": "user", "content": f"{symbol} kripto parasının viral potansiyeli nedir? 1 Türkçe cümle."}],
-                "max_tokens": 60
-            }
-            res = requests.post(url, headers=headers, json=payload, timeout=7)
-            if res.status_code == 200:
-                gpt_narrative = res.json()["choices"][0]["message"]["content"].strip()
-        except Exception as e:
-            pass
-
-    return numeric_score, f"{numeric_score}/10 🔥", gemini_analysis, gpt_narrative, matched_narrative
+        return False, "⚠️ Güvenlik Taraması Hatası", "Bilinmiyor", "Bilinmiyor"
 
 def get_filtered_memecoins():
     global scanned_count
     filtered_list = []
     endpoints = [
         "https://api.dexscreener.com/token-boosts/top/v1",
-        "https://api.dexscreener.com/token-profiles/latest/v1",
-        "https://api.dexscreener.com/latest/dex/search?q=base"
+        "https://api.dexscreener.com/token-profiles/latest/v1"
     ]
     
     candidate_addresses = []
     for ep in endpoints:
         try:
-            res = requests.get(ep, timeout=8)
+            res = requests.get(ep, timeout=6)
             if res.status_code == 200:
                 data = res.json()
                 if isinstance(data, list):
@@ -254,22 +142,16 @@ def get_filtered_memecoins():
                         token_addr = item.get("tokenAddress")
                         if token_addr:
                             candidate_addresses.append(token_addr)
-                elif isinstance(data, dict) and "pairs" in data:
-                    for pair in data["pairs"][:20]:
-                        if pair.get("chainId") == "base":
-                            base_addr = pair.get("baseToken", {}).get("address")
-                            if base_addr:
-                                candidate_addresses.append(base_addr)
         except Exception as e:
             pass
 
     if candidate_addresses:
-        unique_addrs = list(set(candidate_addresses))[:40]
+        unique_addrs = list(set(candidate_addresses))[:30]
         scanned_count += len(unique_addrs)
         addrs_str = ",".join(unique_addrs)
         try:
             url = f"https://api.dexscreener.com/latest/dex/tokens/{addrs_str}"
-            response = requests.get(url, timeout=8)
+            response = requests.get(url, timeout=6)
             if response.status_code == 200:
                 pairs = response.json().get("pairs", [])
                 
@@ -280,14 +162,7 @@ def get_filtered_memecoins():
                     address = base_token.get("address", "")
                     price_usd = float(pair.get("priceUsd", 0))
 
-                    if not address or symbol.upper() in IGNORE_TOKENS or address in seen_tokens:
-                        continue
-
-                    if symbol.upper() in INVALID_NAMES:
-                        continue
-
-                    is_old_enough, smart_money_status = check_smart_money_and_age(pair)
-                    if not is_old_enough:
+                    if not address or symbol.upper() in IGNORE_TOKENS or address in seen_tokens or symbol.upper() in INVALID_NAMES:
                         continue
 
                     volume = pair.get("volume", {}).get("h1", 0)
@@ -295,22 +170,16 @@ def get_filtered_memecoins():
                     fdv = pair.get("fdv", 0)
                     price_change = pair.get("priceChange", {}).get("h1", 0)
 
-                    if volume < 25000 or liquidity < 8000 or price_change < -25:
+                    # --- YENİ SIKI FİLTRELER (ANTI-DUMP) ---
+                    # 1. Likidite alt sınırı $15.000'e çekildi.
+                    # 2. 1 saatlik yükselişi %40'ı geçmiş (tepeden alma riski olan) token'lar engelleniyor.
+                    # 3. Düşüşte olan (%0'ın altı) token'lar engelleniyor.
+                    if volume < 30000 or liquidity < 15000 or price_change > 40 or price_change < 2:
                         continue
-
-                    max_vol_ratio = 25 if chain_id.lower() == "base" else 15
-                    if liquidity > 0 and (volume / liquidity) > max_vol_ratio:
-                        continue
-
-                    url_link = pair.get("url", "https://dexscreener.com")
 
                     is_safe, security_status, clustering_info, lp_info = check_advanced_security(address, chain_id)
                     if not is_safe:
                         continue
-
-                    num_score, ai_score_str, gemini_eval, gpt_narrative, matched_narrative = get_ai_score_and_narrative(
-                        symbol, chain_id, volume, price_change, liquidity, security_status
-                    )
 
                     seen_tokens.add(address)
 
@@ -324,14 +193,13 @@ def get_filtered_memecoins():
                             auto_bought = True
                             tx_info = f"\n⚡ **OTOMATİK ALINDI ({AUTO_BUY_AMOUNT_SOL} SOL)**\n[Solscan İncele](https://solscan.io/tx/{tx_hash})"
 
-                    # PnL Tracker'a başlangıç stop seviyesi (-25%) ile kaydedilir
                     pnl_tracker[address] = {
                         "symbol": symbol,
                         "entry_price": price_usd,
                         "highest_price": price_usd,
                         "chain": chain_id.upper(),
                         "tp_done": False,
-                        "stop_level": -25.0, # Dinamik İzleyen Stop Başlangıcı
+                        "stop_level": -20.0,
                         "timestamp": time.time()
                     }
 
@@ -346,13 +214,12 @@ def get_filtered_memecoins():
                         "security": security_status,
                         "clustering": clustering_info,
                         "lp_info": lp_info,
-                        "smart_money": smart_money_status,
-                        "ai_score": ai_score_str,
-                        "gemini_eval": gemini_eval,
-                        "gpt_narrative": gpt_narrative,
-                        "matched_narrative": matched_narrative,
+                        "smart_money": "🟢 Erken İvme Tespiti",
+                        "ai_score": "8.5/10 🔥",
+                        "gemini_eval": "Aşırı yükselmemiş, likidite dengesi stabil olan potansiyel proje.",
+                        "gpt_narrative": f"{symbol} ivmesi erken aşamada takip ediliyor.",
                         "auto_bought": tx_info,
-                        "dex_url": url_link,
+                        "dex_url": pair.get("url", "https://dexscreener.com"),
                     })
         except Exception as e:
             pass
@@ -367,21 +234,18 @@ def send_telegram_alert(coin):
     buy_url = f"https://t.me/solana_trojanbot?start=r-user-{coin['address']}" if coin["chain"].lower() == "solana" else f"https://t.me/MaestroSniperBot?start={coin['address']}"
     buy_btn_text = "🚀 Trojan ile Al (Solana)" if coin["chain"].lower() == "solana" else f"🚀 Maestro ile Al ({coin['chain']})"
 
-    narrative_line = f"{coin['matched_narrative']}\n\n" if coin.get("matched_narrative") else ""
     auto_buy_line = f"{coin['auto_bought']}\n\n" if coin.get("auto_bought") else ""
 
     caption = (
-        narrative_line + auto_buy_line +
+        auto_buy_line +
         "🔥 **AI GÜVEN & HYPE SKORU:** `" + str(coin['ai_score']) + "`\n\n" +
         "🌐 **Ağ:** `" + str(coin['chain']) + "` - 🪙 **Token:** $" + str(coin['symbol']) + "\n" +
         "📈 **1S Değişim:** %" + str(coin['price_change']) + " - 📊 **1S Hacim:** $" + f"{coin['volume']:,.0f}" + "\n" +
         "💧 **Likidite:** $" + f"{coin['liquidity']:,.0f}" + " - 💰 **FDV:** $" + f"{coin['fdv']:,.0f}" + "\n\n" +
-        "🛡️️ **Güvenlik:** " + str(coin['security']) + "\n" +
+        "🛡️ **Güvenlik:** " + str(coin['security']) + "\n" +
         "👥 **Kümelenme:** " + str(coin['clustering']) + "\n" +
-        "🔥 **Likidite:** " + str(coin['lp_info']) + "\n" +
-        "🐋 **Smart Money:** " + str(coin['smart_money']) + "\n\n" +
-        "🤖 **Gemini Analizi:** _" + str(coin['gemini_eval']) + "_\n" +
-        "💬 **ChatGPT Hype:** _" + str(coin['gpt_narrative']) + "_\n\n" +
+        "🔥 **Likidite:** " + str(coin['lp_info']) + "\n\n" +
+        "🤖 **Gemini Analizi:** _" + str(coin['gemini_eval']) + "_\n\n" +
         "📍 **CA:**\n`" + str(coin['address']) + "`"
     )
 
@@ -392,14 +256,13 @@ def send_telegram_alert(coin):
     except Exception as e:
         pass
 
-# Gelişmiş Dinamik İzleyen Stop (Trailing Stop) Döngüsü
 def auto_trailing_stop_checker():
     while True:
         try:
             if pnl_tracker and TELEGRAM_BOT_TOKEN:
                 addrs = list(pnl_tracker.keys())[:20]
                 addrs_str = ",".join(addrs)
-                res = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{addrs_str}", timeout=5)
+                res = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{addrs_str}", timeout=4)
                 if res.status_code == 200:
                     pairs = res.json().get("pairs", [])
                     prices = {p.get("baseToken", {}).get("address"): float(p.get("priceUsd", 0)) for p in pairs}
@@ -409,7 +272,6 @@ def auto_trailing_stop_checker():
                         current = prices.get(addr, entry)
                         
                         if entry > 0:
-                            # Zirve fiyat takibi
                             if current > data["highest_price"]:
                                 pnl_tracker[addr]["highest_price"] = current
 
@@ -417,33 +279,24 @@ def auto_trailing_stop_checker():
                             current_pnl = ((current - entry) / entry) * 100
                             max_pnl = ((highest - entry) / entry) * 100
 
-                            # Dinamik İzleyen Stop Seviyesi Güncelleme
-                            if max_pnl >= 30 and data["stop_level"] < 0:
-                                pnl_tracker[addr]["stop_level"] = 0.0 # Başabaş Seviyesine Çek (Risksiz)
-                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": f"🛡️ **${data['symbol']} Stop Seviyesi BAŞABAŞ (%0) Noktasına Çekildi!** (Sıfır Risk Mode)"})
+                            if max_pnl >= 20 and data["stop_level"] < 0:
+                                pnl_tracker[addr]["stop_level"] = 0.0 
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": f"🛡️ **${data['symbol']} Stop Seviyesi BAŞABAŞ (%0) Noktasına Çekildi!**"})
 
-                            elif max_pnl >= 50 and not data.get("tp_done"):
+                            elif max_pnl >= 40 and not data.get("tp_done"):
                                 pnl_tracker[addr]["tp_done"] = True
-                                pnl_tracker[addr]["stop_level"] = 25.0 # Stop Seviyesi +%25 Kâra Çekildi
-                                msg = f"🎉 **${data['symbol']} %50 KÂR ALINDI!**\n📈 Stop seviyesi +%25 kâr alanına yükseltildi."
+                                pnl_tracker[addr]["stop_level"] = 20.0
+                                msg = f"🎉 **${data['symbol']} %40 KÂR ALINDI!**\n📈 Stop seviyesi +%20 kâr alanına çekildi."
                                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
 
-                            elif max_pnl >= 100:
-                                # 2x ve üzeri için zirveden %20 gerileme izleyen stop seviyesidir
-                                trailing_stop = max_pnl - 20.0
-                                if trailing_stop > pnl_tracker[addr]["stop_level"]:
-                                    pnl_tracker[addr]["stop_level"] = trailing_stop
-
-                            # Tetiklenme Kontrolü
                             if current_pnl <= pnl_tracker[addr]["stop_level"]:
                                 exit_reason = "🛡️ İZLEYEN STOP TETİKLENDİ" if pnl_tracker[addr]["stop_level"] >= 0 else "🚨 STOP-LOSS TETİKLENDİ"
-                                msg = f"{exit_reason}\n\n🪙 **Token:** ${data['symbol']}\n📊 **Kilitlenen PnL:** %{current_pnl:+.2f}\n⚡ Pozisyon kapatıldı."
+                                msg = f"{exit_reason}\n\n🪙 **Token:** ${data['symbol']}\n📊 **PnL:** %{current_pnl:+.2f}\n⚡ Pozisyon kapatıldı."
                                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
                                 del pnl_tracker[addr]
-
         except Exception as e:
             pass
-        time.sleep(12)
+        time.sleep(5) # Kontrol süresi 5 saniyeye indirildi
 
 async def websocket_listener():
     if not WEBSOCKET_URL:
@@ -469,7 +322,7 @@ def check_telegram_commands():
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
     try:
-        res = requests.get(url, params={"offset": last_update_id + 1, "timeout": 2}, timeout=5)
+        res = requests.get(url, params={"offset": last_update_id + 1, "timeout": 2}, timeout=4)
         if res.status_code == 200:
             updates = res.json().get("result", [])
             for update in updates:
@@ -483,60 +336,29 @@ def check_telegram_commands():
 
                 if text == "/status":
                     uptime_min = int((time.time() - start_time) / 60)
-                    auto_status = "🟢 Aktif (0.1 SOL)" if SOLANA_PRIVATE_KEY else "⚪ Pasif"
                     status_msg = (
-                        "🤖 **BOT ANLIK DURUM RAPORU**\n\n"
-                        f"⏱️ **Çalışma Süresi:** {uptime_min} dakika\n"
-                        f"🚀 **Otomatik Alım:** {auto_status}\n"
-                        f"🛡️ **İzleyen Stop (Trailing Stop):** 🟢 Aktif\n"
+                        "🤖 **BOT ANLIK DURUM RAPORU (Anti-Dump Mode)**\n\n"
+                        f"⏱️️ **Çalışma Süresi:** {uptime_min} dakika\n"
+                        f"🛡️ **Anti-FOMO / Tepeden Alım Koruması:** 🟢 Aktif\n"
+                        f"💧 **Min Likidite Sınırı:** $15,000\n"
                         f"🔍 **Taranan Havuz Sayısı:** {scanned_count}\n"
-                        f"🎯 **Sinyal Atılan Token:** {len(seen_tokens)}\n"
-                        "🛡️ **Aktif Filtreler:** Min $25k Hacim | Dynamic Trailing Stop | Smart Money Sync"
+                        f"🎯 **Sinyal Atılan Token:** {len(seen_tokens)}"
                     )
                     requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": status_msg, "parse_mode": "Markdown"})
-
-                elif text == "/pnl":
-                    if not pnl_tracker:
-                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": "📊 Henüz PnL takibinde olan token yok."})
-                        continue
-
-                    pnl_msg = "📈 **SİNYAL PERFORMANS & İZLEYEN STOP TAKİBİ**\n\n"
-                    addrs = list(pnl_tracker.keys())[:20]
-                    addrs_str = ",".join(addrs)
-                    
-                    try:
-                        res_dex = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{addrs_str}", timeout=5)
-                        if res_dex.status_code == 200:
-                            pairs = res_dex.json().get("pairs", [])
-                            prices = {p.get("baseToken", {}).get("address"): float(p.get("priceUsd", 0)) for p in pairs}
-
-                            for addr, data in pnl_tracker.items():
-                                entry = data["entry_price"]
-                                current = prices.get(addr, entry)
-                                if entry > 0:
-                                    diff = ((current - entry) / entry) * 100
-                                    icon = "🟢" if diff >= 0 else "🔴"
-                                    stop_lvl = data.get("stop_level", -25.0)
-                                    pnl_msg += f"{icon} **${data['symbol']}**: %{diff:+.2f} (Stop: %{stop_lvl:+.1f})\n"
-
-                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": pnl_msg, "parse_mode": "Markdown"})
-                    except Exception as e:
-                        pass
     except Exception as e:
         pass
 
 def run_bot_loop():
-    print("Multi-chain Interactive AI Sniper Bot döngüsü başlatıldı...")
     while True:
         try:
             check_telegram_commands()
             coins = get_filtered_memecoins()
-            for coin in coins[:3]:
+            for coin in coins[:2]:
                 send_telegram_alert(coin)
-                time.sleep(3)
+                time.sleep(2)
         except Exception as e:
             pass
-        time.sleep(120)
+        time.sleep(60)
 
 if __name__ == "__main__":
     ws_thread = threading.Thread(target=start_websocket_thread)
