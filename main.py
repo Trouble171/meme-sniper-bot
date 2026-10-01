@@ -28,7 +28,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 WEBSOCKET_URL = os.environ.get("WEBSOCKET_URL")
 SOLANA_PRIVATE_KEY = os.environ.get("SOLANA_PRIVATE_KEY")
 SOLANA_RPC_URL = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
-AUTO_BUY_AMOUNT_SOL = float(os.environ.get("AUTO_BUY_AMOUNT_SOL", "0.1"))
+AUTO_BUY_AMOUNT_SOL = float(os.environ.get("AUTO_BUY_AMOUNT_SOL", "0.09"))
 
 seen_tokens = set()
 pnl_tracker = {} 
@@ -164,7 +164,7 @@ def check_advanced_security(mint_address, chain_id):
             lp_info = "⚠️ LP Riskli" if lp_unlocked else "🔥 LP Güvenli / Kilitli"
 
             return is_safe, status, clustering_info, lp_info
-        return False, "⚠️ Güvenlik Verisi Yok", "Bilinmiyor", "Bilinmiyor"
+        return False, "⚠️️ Güvenlik Verisi Yok", "Bilinmiyor", "Bilinmiyor"
     except Exception as e:
         return False, "⚠️ Güvenlik Taraması Hatası", "Bilinmiyor", "Bilinmiyor"
 
@@ -331,7 +331,7 @@ def auto_trailing_stop_checker():
 
                             if max_pnl >= 20 and data["stop_level"] < 0:
                                 pnl_tracker[addr]["stop_level"] = 0.0 
-                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": f"🛡️️ **${data['symbol']} Stop Seviyesi BAŞABAŞ (%0) Noktasına Çekildi!**"})
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": f"🛡️ **${data['symbol']} Stop Seviyesi BAŞABAŞ (%0) Noktasına Çekildi!**"})
 
                             elif max_pnl >= 40 and not data.get("tp_done"):
                                 pnl_tracker[addr]["tp_done"] = True
@@ -386,7 +386,7 @@ def check_telegram_commands():
 
                 if text == "/status":
                     uptime_min = int((time.time() - start_time) / 60)
-                    has_private_rpc = "🟢 Özel QuickNode RPC" if "quicknode" in SOLANA_RPC_URL.lower() else "🟡 Genel RPC"
+                    has_private_rpc = "🟢 Özel QuickNode RPC" if "quiknode" in SOLANA_RPC_URL.lower() else "🟡 Genel RPC"
                     status_msg = (
                         "🤖 **BOT ANLIK DURUM RAPORU (Private RPC Engine)**\n\n"
                         f"⏱️ **Çalışma Süresi:** {uptime_min} dakika\n"
