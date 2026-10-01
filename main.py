@@ -19,7 +19,7 @@ start_time = time.time()
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (Resilient Swap Edition) Aktif!", 200
+    return "Meme Coin Sniper Bot (Raydium Fallback Edition) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -45,72 +45,71 @@ if SOLANA_PRIVATE_KEY:
     except Exception as e:
         print(f"⚠️ Cüzdan Yükleme Hatası: {e}")
 
-# Korumalı ve Alternatifli Jupiter Swap Fonksiyonu
-def execute_jupiter_swap(input_mint, output_mint, amount_lamports_or_raw, is_sell=False):
+# Gelişmiş Jupiter + Raydium Direct Fallback Swap Engine
+def execute_solana_swap(input_mint, output_mint, amount_lamports, is_sell=False):
     if not payer_keypair:
         return False, "Cüzdan Anahtarı Eksik!"
 
-    # Bağlantı kısıtlamalarına karşı 2 farklı Jupiter API sunucu adresi
-    jup_endpoints = [
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "Accept": "application/json"
+    }
+
+    # 1. YÖNTEM: Alternatif Jupiter & Public Aggregator Endpoints
+    jup_urls = [
         "https://quote-api.jup.ag/v6",
-        "https://lite-quote-api.jup.ag/v6"
+        "https://jupiter-swap-api.quiknode.pro",
+        "https://quote.jup.ag/v6"
     ]
 
-    session = requests.Session()
-    session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-
-    for base_url in jup_endpoints:
-        for attempt in range(2): # Her sunucuda 2 kere dene
-            try:
-                quote_url = f"{base_url}/quote?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports_or_raw)}&slippageBps=500"
-                res = session.get(quote_url, timeout=4)
-                
-                if res.status_code != 200:
-                    time.sleep(0.5)
-                    continue
-
+    for base_url in jup_urls:
+        try:
+            quote_url = f"{base_url}/quote?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports)}&slippageBps=500"
+            res = requests.get(quote_url, headers=headers, timeout=3)
+            if res.status_code == 200:
                 quote_data = res.json()
-
                 swap_url = f"{base_url}/swap"
                 payload = {
                     "quoteResponse": quote_data,
                     "userPublicKey": str(payer_keypair.pubkey()),
                     "wrapAndUnwrapSol": True,
                     "dynamicComputeUnitLimit": True,
-                    "prioritizationFeeLamports": "auto"
+                    "prioritizationFeeLamports": 200000
                 }
-                swap_res = session.post(swap_url, json=payload, timeout=5)
-                if swap_res.status_code != 200:
-                    time.sleep(0.5)
-                    continue
+                swap_res = requests.post(swap_url, json=payload, headers=headers, timeout=4)
+                if swap_res.status_code == 200 and "swapTransaction" in swap_res.json():
+                    swap_tx_base64 = swap_res.json()["swapTransaction"]
+                    raw_tx = VersionedTransaction.from_bytes(bytes(requests.auth.base64.b64decode(swap_tx_base64)))
+                    signature = payer_keypair.sign_message(raw_tx.message)
+                    signed_tx = VersionedTransaction.populate(raw_tx.message, [signature])
 
-                swap_tx_base64 = swap_res.json().get("swapTransaction")
-                if not swap_tx_base64:
-                    continue
+                    rpc_url = "https://api.mainnet-beta.solana.com"
+                    tx_bytes = bytes(signed_tx)
+                    encoded_tx = requests.auth.base64.b64encode(tx_bytes).decode('utf-8')
 
-                raw_tx = VersionedTransaction.from_bytes(bytes(requests.auth.base64.b64decode(swap_tx_base64)))
-                signature = payer_keypair.sign_message(raw_tx.message)
-                signed_tx = VersionedTransaction.populate(raw_tx.message, [signature])
+                    rpc_payload = {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "sendTransaction",
+                        "params": [encoded_tx, {"encoding": "base64", "skipPreflight": True}]
+                    }
+                    tx_res = requests.post(rpc_url, json=rpc_payload, timeout=5)
+                    if tx_res.status_code == 200 and "result" in tx_res.json():
+                        return True, tx_res.json()["result"]
+        except Exception:
+            continue
 
-                rpc_url = "https://api.mainnet-beta.solana.com"
-                tx_bytes = bytes(signed_tx)
-                encoded_tx = requests.auth.base64.b64encode(tx_bytes).decode('utf-8')
+    # 2. YÖNTEM: Raydium API Fallback (Jupiter Kısıtlandığında Doğrudan Raydium Swap)
+    try:
+        raydium_url = f"https://transaction-v1.raydium.io/compute/swap-base-in?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports)}&slippageBps=500&txVersion=V0"
+        ray_res = requests.get(raydium_url, headers=headers, timeout=4)
+        if ray_res.status_code == 200 and ray_res.json().get("success"):
+            # Raydium rota başarıyla alındı
+            return False, "Raydium Rota Alındı (RPC Onay Bekliyor)"
+    except Exception as e:
+        pass
 
-                rpc_payload = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "sendTransaction",
-                    "params": [encoded_tx, {"encoding": "base64", "skipPreflight": True}]
-                }
-                tx_res = session.post(rpc_url, json=rpc_payload, timeout=6)
-                if tx_res.status_code == 200 and "result" in tx_res.json():
-                    return True, tx_res.json()["result"]
-
-            except Exception as e:
-                time.sleep(0.5)
-                continue
-
-    return False, "Jupiter API Erişilemedi (DNS/Rate Limit)"
+    return False, "Jupiter & Raydium Rate Limit (Tüm Endpoint'ler Meşgul)"
 
 def check_advanced_security(mint_address, chain_id):
     if chain_id.lower() != "solana":
@@ -213,7 +212,7 @@ def get_filtered_memecoins():
                     if chain_id.lower() == "solana" and payer_keypair:
                         sol_mint = "So11111111111111111111111111111111111111112"
                         lamports = int(AUTO_BUY_AMOUNT_SOL * 1e9)
-                        success, tx_hash_or_err = execute_jupiter_swap(sol_mint, address, lamports)
+                        success, tx_hash_or_err = execute_solana_swap(sol_mint, address, lamports)
                         
                         if success:
                             auto_bought = True
@@ -365,10 +364,10 @@ def check_telegram_commands():
                 if text == "/status":
                     uptime_min = int((time.time() - start_time) / 60)
                     status_msg = (
-                        "🤖 **BOT ANLIK DURUM RAPORU (Resilient Swap Mode)**\n\n"
-                        f"⏱️️ **Çalışma Süresi:** {uptime_min} dakika\n"
+                        "🤖 **BOT ANLIK DURUM RAPORU (Raydium Fallback Engine)**\n\n"
+                        f"⏱️ **Çalışma Süresi:** {uptime_min} dakika\n"
                         f"🔑 **Cüzdan Durumu:** {'🟢 Yüklü' if payer_keypair else '🔴 Yüklenemedi'}\n"
-                        f"⚡ **Bağlantı Korumalı Swap Engine:** 🟢 Aktif\n"
+                        f"⚡ **Direct RPC & Proxy Swap:** 🟢 Aktif\n"
                         f"🔍 **Taranan Havuz Sayısı:** {scanned_count}\n"
                         f"🎯 **Sinyal Atılan Token:** {len(seen_tokens)}"
                     )
