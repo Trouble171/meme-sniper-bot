@@ -19,7 +19,7 @@ start_time = time.time()
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (Direct RPC Engine) Aktif!", 200
+    return "Meme Coin Sniper Bot (Multi-RPC Raydium Engine) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -45,18 +45,39 @@ if SOLANA_PRIVATE_KEY:
     except Exception as e:
         print(f"⚠️ Cüzdan Yükleme Hatası: {e}")
 
+# Çoklu RPC Desteği ile İşlem Gönderici
+def send_raw_tx_multi_rpc(encoded_tx):
+    rpc_nodes = [
+        "https://api.mainnet-beta.solana.com",
+        "https://rpc.ankr.com/solana",
+        "https://solana-api.projectserum.com"
+    ]
+    for rpc in rpc_nodes:
+        try:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "sendTransaction",
+                "params": [encoded_tx, {"encoding": "base64", "skipPreflight": True}]
+            }
+            res = requests.post(rpc, json=payload, timeout=5)
+            if res.status_code == 200 and "result" in res.json():
+                return True, res.json()["result"]
+        except Exception:
+            continue
+    return False, "RPC Düğümleri Yanıt Vermedi"
+
 # Kısıtlamasız Doğrudan Solana RPC Swap Engine
 def execute_solana_direct_swap(input_mint, output_mint, amount_lamports):
     if not payer_keypair:
         return False, "Cüzdan Anahtarı Eksik!"
 
-    # 1. Aşama: Jupiter Public V6 Proxy (Alternatif Port/IP'ler)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json"
     }
 
-    # Ağ engellerini aşmak için 4 farklı rotasyon adresi
+    # 1. Aşama: Jupiter Public V6 Proxy
     rpc_gateways = [
         "https://quote-api.jup.ag/v6",
         "https://lite-quote-api.jup.ag/v6",
@@ -75,7 +96,7 @@ def execute_solana_direct_swap(input_mint, output_mint, amount_lamports):
                     "userPublicKey": str(payer_keypair.pubkey()),
                     "wrapAndUnwrapSol": True,
                     "dynamicComputeUnitLimit": True,
-                    "prioritizationFeeLamports": 300000 # Öncelikli onay ücreti
+                    "prioritizationFeeLamports": 300000
                 }
                 swap_res = requests.post(f"{gateway}/swap", json=swap_payload, headers=headers, timeout=4)
                 
@@ -85,30 +106,34 @@ def execute_solana_direct_swap(input_mint, output_mint, amount_lamports):
                     signature = payer_keypair.sign_message(raw_tx.message)
                     signed_tx = VersionedTransaction.populate(raw_tx.message, [signature])
 
-                    rpc_url = "https://api.mainnet-beta.solana.com"
                     encoded_tx = requests.auth.base64.b64encode(bytes(signed_tx)).decode('utf-8')
-                    rpc_payload = {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "sendTransaction",
-                        "params": [encoded_tx, {"encoding": "base64", "skipPreflight": True}]
-                    }
-                    tx_res = requests.post(rpc_url, json=rpc_payload, timeout=5)
-                    if tx_res.status_code == 200 and "result" in tx_res.json():
-                        return True, tx_res.json()["result"]
+                    success, tx_hash = send_raw_tx_multi_rpc(encoded_tx)
+                    if success:
+                        return True, tx_hash
         except Exception:
             continue
 
-    # 2. Aşama: Raydium / On-Chain Direct Gateway Fallback
+    # 2. Aşama: Raydium API Fallback
     try:
         ray_url = f"https://transaction-v1.raydium.io/compute/swap-base-in?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports)}&slippageBps=1000&txVersion=V0"
-        ray_res = requests.get(ray_url, headers=headers, timeout=3)
-        if ray_res.status_code == 200:
-            return False, "Raydium Havuz Rotalandı (Solana On-Chain Sırasında)"
+        ray_res = requests.get(ray_url, headers=headers, timeout=4)
+        if ray_res.status_code == 200 and ray_res.json().get("success"):
+            data = ray_res.json().get("data", {})
+            swap_tx_base64 = data.get("swapTransaction")
+            if swap_tx_base64:
+                raw_tx = VersionedTransaction.from_bytes(bytes(requests.auth.base64.b64decode(swap_tx_base64)))
+                signature = payer_keypair.sign_message(raw_tx.message)
+                signed_tx = VersionedTransaction.populate(raw_tx.message, [signature])
+                
+                encoded_tx = requests.auth.base64.b64encode(bytes(signed_tx)).decode('utf-8')
+                success, tx_hash = send_raw_tx_multi_rpc(encoded_tx)
+                if success:
+                    return True, tx_hash
+                return False, "Raydium İşlemi Hazırlandı Ancak RPC Ağ Onayı Bekliyor"
     except Exception:
         pass
 
-    return False, "Jupiter/Raydium IP Engeli (Manuel Alım Butonunu Kullanın)"
+    return False, "Jupiter & Raydium Yüksek Ağ Yoğunluğu"
 
 def check_advanced_security(mint_address, chain_id):
     if chain_id.lower() != "solana":
@@ -363,10 +388,10 @@ def check_telegram_commands():
                 if text == "/status":
                     uptime_min = int((time.time() - start_time) / 60)
                     status_msg = (
-                        "🤖 **BOT ANLIK DURUM RAPORU (Direct RPC Engine)**\n\n"
+                        "🤖 **BOT ANLIK DURUM RAPORU (Multi-RPC Raydium Engine)**\n\n"
                         f"⏱️ **Çalışma Süresi:** {uptime_min} dakika\n"
                         f"🔑 **Cüzdan Durumu:** {'🟢 Yüklü' if payer_keypair else '🔴 Yüklenemedi'}\n"
-                        f"⚡ **Direct Solana RPC Swap:** 🟢 Aktif\n"
+                        f"⚡ **Multi-RPC On-Chain Onay:** 🟢 Aktif\n"
                         f"🔍 **Taranan Havuz Sayısı:** {scanned_count}\n"
                         f"🎯 **Sinyal Atılan Token:** {len(seen_tokens)}"
                     )
