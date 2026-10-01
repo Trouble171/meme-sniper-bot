@@ -19,7 +19,7 @@ start_time = time.time()
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (QuickNode Private RPC Engine) Aktif!", 200
+    return "Meme Coin Sniper Bot (High-Tolerance RPC Engine) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -44,9 +44,8 @@ if SOLANA_PRIVATE_KEY:
         payer_keypair = Keypair.from_base58_string(SOLANA_PRIVATE_KEY)
         print(f"🔑 Cüzdan Yüklendi: {payer_keypair.pubkey()}")
     except Exception as e:
-        print(f"⚠️ Cüzdan Yükleme Hatası: {e}")
+        print(f"⚠️️ Cüzdan Yükleme Hatası: {e}")
 
-# QuickNode Özel RPC ile İşlem Gönderici
 def send_raw_tx_private_rpc(encoded_tx):
     rpc_nodes = [
         SOLANA_RPC_URL,
@@ -59,14 +58,14 @@ def send_raw_tx_private_rpc(encoded_tx):
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "sendTransaction",
-                "params": [encoded_tx, {"encoding": "base64", "skipPreflight": True}]
+                "params": [encoded_tx, {"encoding": "base64", "skipPreflight": True, "maxRetries": 5}]
             }
-            res = requests.post(rpc, json=payload, timeout=6)
+            res = requests.post(rpc, json=payload, timeout=8)
             if res.status_code == 200 and "result" in res.json():
                 return True, res.json()["result"]
         except Exception:
             continue
-    return False, "Özel RPC / Düğümler Yanıt Vermedi"
+    return False, "Özel RPC Yanıt Vermedi"
 
 def execute_solana_direct_swap(input_mint, output_mint, amount_lamports):
     if not payer_keypair:
@@ -77,17 +76,17 @@ def execute_solana_direct_swap(input_mint, output_mint, amount_lamports):
         "Accept": "application/json"
     }
 
-    # 1. Aşama: Jupiter Public V6 Proxy
     rpc_gateways = [
         "https://quote-api.jup.ag/v6",
         "https://lite-quote-api.jup.ag/v6",
         "https://swap-api.solana.com/v6"
     ]
 
+    # Jupiter Aggregator (%20 Slippage Toleransı)
     for gateway in rpc_gateways:
         try:
-            quote_url = f"{gateway}/quote?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports)}&slippageBps=1000"
-            res = requests.get(quote_url, headers=headers, timeout=3)
+            quote_url = f"{gateway}/quote?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports)}&slippageBps=2000"
+            res = requests.get(quote_url, headers=headers, timeout=5)
             
             if res.status_code == 200:
                 quote_data = res.json()
@@ -96,9 +95,9 @@ def execute_solana_direct_swap(input_mint, output_mint, amount_lamports):
                     "userPublicKey": str(payer_keypair.pubkey()),
                     "wrapAndUnwrapSol": True,
                     "dynamicComputeUnitLimit": True,
-                    "prioritizationFeeLamports": 300000
+                    "prioritizationFeeLamports": 600000
                 }
-                swap_res = requests.post(f"{gateway}/swap", json=swap_payload, headers=headers, timeout=4)
+                swap_res = requests.post(f"{gateway}/swap", json=swap_payload, headers=headers, timeout=6)
                 
                 if swap_res.status_code == 200 and "swapTransaction" in swap_res.json():
                     swap_tx_base64 = swap_res.json()["swapTransaction"]
@@ -113,10 +112,10 @@ def execute_solana_direct_swap(input_mint, output_mint, amount_lamports):
         except Exception:
             continue
 
-    # 2. Aşama: Raydium API Fallback
+    # Raydium Direct Fallback (%20 Slippage)
     try:
-        ray_url = f"https://transaction-v1.raydium.io/compute/swap-base-in?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports)}&slippageBps=1000&txVersion=V0"
-        ray_res = requests.get(ray_url, headers=headers, timeout=4)
+        ray_url = f"https://transaction-v1.raydium.io/compute/swap-base-in?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports)}&slippageBps=2000&txVersion=V0"
+        ray_res = requests.get(ray_url, headers=headers, timeout=6)
         if ray_res.status_code == 200 and ray_res.json().get("success"):
             data = ray_res.json().get("data", {})
             swap_tx_base64 = data.get("swapTransaction")
@@ -164,7 +163,7 @@ def check_advanced_security(mint_address, chain_id):
             lp_info = "⚠️ LP Riskli" if lp_unlocked else "🔥 LP Güvenli / Kilitli"
 
             return is_safe, status, clustering_info, lp_info
-        return False, "⚠️️ Güvenlik Verisi Yok", "Bilinmiyor", "Bilinmiyor"
+        return False, "⚠️ Güvenlik Verisi Yok", "Bilinmiyor", "Bilinmiyor"
     except Exception as e:
         return False, "⚠️ Güvenlik Taraması Hatası", "Bilinmiyor", "Bilinmiyor"
 
@@ -388,7 +387,7 @@ def check_telegram_commands():
                     uptime_min = int((time.time() - start_time) / 60)
                     has_private_rpc = "🟢 Özel QuickNode RPC" if "quiknode" in SOLANA_RPC_URL.lower() else "🟡 Genel RPC"
                     status_msg = (
-                        "🤖 **BOT ANLIK DURUM RAPORU (Private RPC Engine)**\n\n"
+                        "🤖 **BOT ANLIK DURUM RAPORU (High-Tolerance RPC Engine)**\n\n"
                         f"⏱️ **Çalışma Süresi:** {uptime_min} dakika\n"
                         f"🔑 **Cüzdan Durumu:** {'🟢 Yüklü' if payer_keypair else '🔴 Yüklenemedi'}\n"
                         f"⚡ **RPC Bağlantısı:** {has_private_rpc}\n"
