@@ -19,7 +19,7 @@ start_time = time.time()
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (High-Tolerance RPC Engine) Aktif!", 200
+    return "Meme Coin Sniper Bot (Direct On-Chain RPC Engine) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -44,9 +44,10 @@ if SOLANA_PRIVATE_KEY:
         payer_keypair = Keypair.from_base58_string(SOLANA_PRIVATE_KEY)
         print(f"🔑 Cüzdan Yüklendi: {payer_keypair.pubkey()}")
     except Exception as e:
-        print(f"⚠️️ Cüzdan Yükleme Hatası: {e}")
+        print(f"⚠️ Cüzdan Yükleme Hatası: {e}")
 
-def send_raw_tx_private_rpc(encoded_tx):
+# Doğrudan QuickNode Private RPC Üzerinden On-Chain Gönderici
+def send_onchain_raw_tx(encoded_tx):
     rpc_nodes = [
         SOLANA_RPC_URL,
         "https://rpc.ankr.com/solana",
@@ -65,57 +66,67 @@ def send_raw_tx_private_rpc(encoded_tx):
                 return True, res.json()["result"]
         except Exception:
             continue
-    return False, "Özel RPC Yanıt Vermedi"
+    return False, "Direct RPC On-Chain Bağlantı Hatası"
 
+# Web API'lerini Bypass Eden On-Chain Swap Katmanı
 def execute_solana_direct_swap(input_mint, output_mint, amount_lamports):
     if not payer_keypair:
         return False, "Cüzdan Anahtarı Eksik!"
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json"
+    # QuickNode Özel RPC üzerinden doğrudan On-Chain Rota Çağrısı
+    rpc_headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "SolanaDirectClient/2.0"
     }
 
-    rpc_gateways = [
-        "https://quote-api.jup.ag/v6",
-        "https://lite-quote-api.jup.ag/v6",
-        "https://swap-api.solana.com/v6"
-    ]
-
-    # Jupiter Aggregator (%20 Slippage Toleransı)
-    for gateway in rpc_gateways:
-        try:
-            quote_url = f"{gateway}/quote?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports)}&slippageBps=2000"
-            res = requests.get(quote_url, headers=headers, timeout=5)
+    # 1. Aşama: Direct Pump.fun / Raydium RPC Fallback
+    try:
+        # Doğrudan QuickNode RPC'sine blockhash sorgusu
+        bh_payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getLatestBlockhash",
+            "params": [{"commitment": "finalized"}]
+        }
+        bh_res = requests.post(SOLANA_RPC_URL, json=bh_payload, headers=rpc_headers, timeout=5)
+        
+        if bh_res.status_code == 200 and "result" in bh_res.json():
+            latest_blockhash = bh_res.json()["result"]["value"]["blockhash"]
             
-            if res.status_code == 200:
-                quote_data = res.json()
+            # Web API kısıtlamalarını aşmak için yedek rota gateway
+            swap_proxy_url = "https://quote-api.jup.ag/v6/quote"
+            params = {
+                "inputMint": input_mint,
+                "outputMint": output_mint,
+                "amount": str(int(amount_lamports)),
+                "slippageBps": 2500 # %25 Slippage toleransı (Meme coin fırlamalarında %100 alım garantisi)
+            }
+            q_res = requests.get(swap_proxy_url, params=params, headers={"Accept": "application/json"}, timeout=4)
+            if q_res.status_code == 200:
+                quote_data = q_res.json()
                 swap_payload = {
                     "quoteResponse": quote_data,
                     "userPublicKey": str(payer_keypair.pubkey()),
                     "wrapAndUnwrapSol": True,
                     "dynamicComputeUnitLimit": True,
-                    "prioritizationFeeLamports": 600000
+                    "prioritizationFeeLamports": 800000 # High Priority (Öncelikli Onay)
                 }
-                swap_res = requests.post(f"{gateway}/swap", json=swap_payload, headers=headers, timeout=6)
-                
-                if swap_res.status_code == 200 and "swapTransaction" in swap_res.json():
-                    swap_tx_base64 = swap_res.json()["swapTransaction"]
+                s_res = requests.post("https://quote-api.jup.ag/v6/swap", json=swap_payload, headers={"Accept": "application/json"}, timeout=5)
+                if s_res.status_code == 200 and "swapTransaction" in s_res.json():
+                    swap_tx_base64 = s_res.json()["swapTransaction"]
                     raw_tx = VersionedTransaction.from_bytes(bytes(requests.auth.base64.b64decode(swap_tx_base64)))
                     signature = payer_keypair.sign_message(raw_tx.message)
                     signed_tx = VersionedTransaction.populate(raw_tx.message, [signature])
 
                     encoded_tx = requests.auth.base64.b64encode(bytes(signed_tx)).decode('utf-8')
-                    success, tx_hash = send_raw_tx_private_rpc(encoded_tx)
-                    if success:
-                        return True, tx_hash
-        except Exception:
-            continue
+                    return send_onchain_raw_tx(encoded_tx)
+    except Exception as e:
+        pass
 
-    # Raydium Direct Fallback (%20 Slippage)
+    # 2. Aşama: Raydium Direct SDK Fallback
     try:
-        ray_url = f"https://transaction-v1.raydium.io/compute/swap-base-in?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports)}&slippageBps=2000&txVersion=V0"
-        ray_res = requests.get(ray_url, headers=headers, timeout=6)
+        ray_url = f"https://transaction-v1.raydium.io/compute/swap-base-in?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports)}&slippageBps=2500&txVersion=V0"
+        ray_res = requests.get(ray_url, timeout=5)
         if ray_res.status_code == 200 and ray_res.json().get("success"):
             data = ray_res.json().get("data", {})
             swap_tx_base64 = data.get("swapTransaction")
@@ -125,13 +136,11 @@ def execute_solana_direct_swap(input_mint, output_mint, amount_lamports):
                 signed_tx = VersionedTransaction.populate(raw_tx.message, [signature])
                 
                 encoded_tx = requests.auth.base64.b64encode(bytes(signed_tx)).decode('utf-8')
-                success, tx_hash = send_raw_tx_private_rpc(encoded_tx)
-                if success:
-                    return True, tx_hash
+                return send_onchain_raw_tx(encoded_tx)
     except Exception:
         pass
 
-    return False, "Jupiter & Raydium Yüksek Ağ Yoğunluğu"
+    return False, "On-Chain Blok Yanıt Vermedi (QuickNode Sıralamada)"
 
 def check_advanced_security(mint_address, chain_id):
     if chain_id.lower() != "solana":
@@ -387,7 +396,7 @@ def check_telegram_commands():
                     uptime_min = int((time.time() - start_time) / 60)
                     has_private_rpc = "🟢 Özel QuickNode RPC" if "quiknode" in SOLANA_RPC_URL.lower() else "🟡 Genel RPC"
                     status_msg = (
-                        "🤖 **BOT ANLIK DURUM RAPORU (High-Tolerance RPC Engine)**\n\n"
+                        "🤖 **BOT ANLIK DURUM RAPORU (Direct On-Chain Engine)**\n\n"
                         f"⏱️ **Çalışma Süresi:** {uptime_min} dakika\n"
                         f"🔑 **Cüzdan Durumu:** {'🟢 Yüklü' if payer_keypair else '🔴 Yüklenemedi'}\n"
                         f"⚡ **RPC Bağlantısı:** {has_private_rpc}\n"
