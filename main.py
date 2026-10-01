@@ -19,7 +19,7 @@ start_time = time.time()
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (Strict Verification Edition) Aktif!", 200
+    return "Meme Coin Sniper Bot (Resilient Swap Edition) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -41,53 +41,76 @@ payer_keypair = None
 if SOLANA_PRIVATE_KEY:
     try:
         payer_keypair = Keypair.from_base58_string(SOLANA_PRIVATE_KEY)
-        print(f"🔑 Cüzdan Başarıyla Yüklendi: {payer_keypair.pubkey()}")
+        print(f"🔑 Cüzdan Yüklendi: {payer_keypair.pubkey()}")
     except Exception as e:
         print(f"⚠️ Cüzdan Yükleme Hatası: {e}")
 
+# Korumalı ve Alternatifli Jupiter Swap Fonksiyonu
 def execute_jupiter_swap(input_mint, output_mint, amount_lamports_or_raw, is_sell=False):
     if not payer_keypair:
-        return False, "Cüzdan Anahtarı (SOLANA_PRIVATE_KEY) Eksik!"
-    try:
-        quote_url = f"https://quote-api.jup.ag/v6/quote?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports_or_raw)}&slippageBps=500"
-        res = requests.get(quote_url, timeout=5)
-        if res.status_code != 200:
-            return False, f"Quote Alınamadı ({res.status_code})"
-        quote_data = res.json()
+        return False, "Cüzdan Anahtarı Eksik!"
 
-        swap_url = "https://quote-api.jup.ag/v6/swap"
-        payload = {
-            "quoteResponse": quote_data,
-            "userPublicKey": str(payer_keypair.pubkey()),
-            "wrapAndUnwrapSol": True,
-            "dynamicComputeUnitLimit": True,
-            "prioritizationFeeLamports": "auto"
-        }
-        swap_res = requests.post(swap_url, json=payload, timeout=6)
-        if swap_res.status_code != 200:
-            return False, f"Swap TX Oluşturulamadı ({swap_res.status_code})"
+    # Bağlantı kısıtlamalarına karşı 2 farklı Jupiter API sunucu adresi
+    jup_endpoints = [
+        "https://quote-api.jup.ag/v6",
+        "https://lite-quote-api.jup.ag/v6"
+    ]
 
-        swap_tx_base64 = swap_res.json().get("swapTransaction")
-        raw_tx = VersionedTransaction.from_bytes(bytes(requests.auth.base64.b64decode(swap_tx_base64)))
-        signature = payer_keypair.sign_message(raw_tx.message)
-        signed_tx = VersionedTransaction.populate(raw_tx.message, [signature])
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
 
-        rpc_url = "https://api.mainnet-beta.solana.com"
-        tx_bytes = bytes(signed_tx)
-        encoded_tx = requests.auth.base64.b64encode(tx_bytes).decode('utf-8')
+    for base_url in jup_endpoints:
+        for attempt in range(2): # Her sunucuda 2 kere dene
+            try:
+                quote_url = f"{base_url}/quote?inputMint={input_mint}&outputMint={output_mint}&amount={int(amount_lamports_or_raw)}&slippageBps=500"
+                res = session.get(quote_url, timeout=4)
+                
+                if res.status_code != 200:
+                    time.sleep(0.5)
+                    continue
 
-        rpc_payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "sendTransaction",
-            "params": [encoded_tx, {"encoding": "base64", "skipPreflight": True}]
-        }
-        tx_res = requests.post(rpc_url, json=rpc_payload, timeout=8)
-        if tx_res.status_code == 200 and "result" in tx_res.json():
-            return True, tx_res.json()["result"]
-        return False, "RPC Ağ Gönderim Hatası"
-    except Exception as e:
-        return False, str(e)
+                quote_data = res.json()
+
+                swap_url = f"{base_url}/swap"
+                payload = {
+                    "quoteResponse": quote_data,
+                    "userPublicKey": str(payer_keypair.pubkey()),
+                    "wrapAndUnwrapSol": True,
+                    "dynamicComputeUnitLimit": True,
+                    "prioritizationFeeLamports": "auto"
+                }
+                swap_res = session.post(swap_url, json=payload, timeout=5)
+                if swap_res.status_code != 200:
+                    time.sleep(0.5)
+                    continue
+
+                swap_tx_base64 = swap_res.json().get("swapTransaction")
+                if not swap_tx_base64:
+                    continue
+
+                raw_tx = VersionedTransaction.from_bytes(bytes(requests.auth.base64.b64decode(swap_tx_base64)))
+                signature = payer_keypair.sign_message(raw_tx.message)
+                signed_tx = VersionedTransaction.populate(raw_tx.message, [signature])
+
+                rpc_url = "https://api.mainnet-beta.solana.com"
+                tx_bytes = bytes(signed_tx)
+                encoded_tx = requests.auth.base64.b64encode(tx_bytes).decode('utf-8')
+
+                rpc_payload = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "sendTransaction",
+                    "params": [encoded_tx, {"encoding": "base64", "skipPreflight": True}]
+                }
+                tx_res = session.post(rpc_url, json=rpc_payload, timeout=6)
+                if tx_res.status_code == 200 and "result" in tx_res.json():
+                    return True, tx_res.json()["result"]
+
+            except Exception as e:
+                time.sleep(0.5)
+                continue
+
+    return False, "Jupiter API Erişilemedi (DNS/Rate Limit)"
 
 def check_advanced_security(mint_address, chain_id):
     if chain_id.lower() != "solana":
@@ -166,7 +189,6 @@ def get_filtered_memecoins():
                     if not address or symbol.upper() in IGNORE_TOKENS or address in seen_tokens or symbol.upper() in INVALID_NAMES:
                         continue
 
-                    # Min 30 dakika havuz yaşı şartı
                     pair_created_at = pair.get("pairCreatedAt", 0)
                     if pair_created_at > 0 and (current_time_ms - pair_created_at) < 1800000:
                         continue
@@ -188,7 +210,6 @@ def get_filtered_memecoins():
                     auto_bought = False
                     tx_info = ""
                     
-                    # GERÇEK ALIM VE ONAY KONTROLÜ
                     if chain_id.lower() == "solana" and payer_keypair:
                         sol_mint = "So11111111111111111111111111111111111111112"
                         lamports = int(AUTO_BUY_AMOUNT_SOL * 1e9)
@@ -198,7 +219,6 @@ def get_filtered_memecoins():
                             auto_bought = True
                             tx_info = f"\n⚡ **GERÇEK ALIM BAŞARILI ({AUTO_BUY_AMOUNT_SOL} SOL)**\n[Solscan İncele](https://solscan.io/tx/{tx_hash_or_err})"
                             
-                            # Yalnızca işlem zincirde onaylandıysa takip başlatılır!
                             pnl_tracker[address] = {
                                 "symbol": symbol,
                                 "entry_price": price_usd,
@@ -345,10 +365,10 @@ def check_telegram_commands():
                 if text == "/status":
                     uptime_min = int((time.time() - start_time) / 60)
                     status_msg = (
-                        "🤖 **BOT ANLIK DURUM RAPORU (Verified Mode)**\n\n"
-                        f"⏱️ **Çalışma Süresi:** {uptime_min} dakika\n"
+                        "🤖 **BOT ANLIK DURUM RAPORU (Resilient Swap Mode)**\n\n"
+                        f"⏱️️ **Çalışma Süresi:** {uptime_min} dakika\n"
                         f"🔑 **Cüzdan Durumu:** {'🟢 Yüklü' if payer_keypair else '🔴 Yüklenemedi'}\n"
-                        f"🛡️ **Gerçek Onay Kontrolü:** 🟢 Aktif\n"
+                        f"⚡ **Bağlantı Korumalı Swap Engine:** 🟢 Aktif\n"
                         f"🔍 **Taranan Havuz Sayısı:** {scanned_count}\n"
                         f"🎯 **Sinyal Atılan Token:** {len(seen_tokens)}"
                     )
