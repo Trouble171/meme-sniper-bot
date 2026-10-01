@@ -19,7 +19,7 @@ start_time = time.time()
 
 @app.route("/")
 def home():
-    return "Meme Coin Sniper Bot (Multi-RPC Raydium Engine) Aktif!", 200
+    return "Meme Coin Sniper Bot (QuickNode Private RPC Engine) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -27,6 +27,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 WEBSOCKET_URL = os.environ.get("WEBSOCKET_URL")
 SOLANA_PRIVATE_KEY = os.environ.get("SOLANA_PRIVATE_KEY")
+SOLANA_RPC_URL = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
 AUTO_BUY_AMOUNT_SOL = float(os.environ.get("AUTO_BUY_AMOUNT_SOL", "0.1"))
 
 seen_tokens = set()
@@ -45,12 +46,12 @@ if SOLANA_PRIVATE_KEY:
     except Exception as e:
         print(f"⚠️ Cüzdan Yükleme Hatası: {e}")
 
-# Çoklu RPC Desteği ile İşlem Gönderici
-def send_raw_tx_multi_rpc(encoded_tx):
+# QuickNode Özel RPC ile İşlem Gönderici
+def send_raw_tx_private_rpc(encoded_tx):
     rpc_nodes = [
-        "https://api.mainnet-beta.solana.com",
+        SOLANA_RPC_URL,
         "https://rpc.ankr.com/solana",
-        "https://solana-api.projectserum.com"
+        "https://api.mainnet-beta.solana.com"
     ]
     for rpc in rpc_nodes:
         try:
@@ -60,14 +61,13 @@ def send_raw_tx_multi_rpc(encoded_tx):
                 "method": "sendTransaction",
                 "params": [encoded_tx, {"encoding": "base64", "skipPreflight": True}]
             }
-            res = requests.post(rpc, json=payload, timeout=5)
+            res = requests.post(rpc, json=payload, timeout=6)
             if res.status_code == 200 and "result" in res.json():
                 return True, res.json()["result"]
         except Exception:
             continue
-    return False, "RPC Düğümleri Yanıt Vermedi"
+    return False, "Özel RPC / Düğümler Yanıt Vermedi"
 
-# Kısıtlamasız Doğrudan Solana RPC Swap Engine
 def execute_solana_direct_swap(input_mint, output_mint, amount_lamports):
     if not payer_keypair:
         return False, "Cüzdan Anahtarı Eksik!"
@@ -107,7 +107,7 @@ def execute_solana_direct_swap(input_mint, output_mint, amount_lamports):
                     signed_tx = VersionedTransaction.populate(raw_tx.message, [signature])
 
                     encoded_tx = requests.auth.base64.b64encode(bytes(signed_tx)).decode('utf-8')
-                    success, tx_hash = send_raw_tx_multi_rpc(encoded_tx)
+                    success, tx_hash = send_raw_tx_private_rpc(encoded_tx)
                     if success:
                         return True, tx_hash
         except Exception:
@@ -126,10 +126,9 @@ def execute_solana_direct_swap(input_mint, output_mint, amount_lamports):
                 signed_tx = VersionedTransaction.populate(raw_tx.message, [signature])
                 
                 encoded_tx = requests.auth.base64.b64encode(bytes(signed_tx)).decode('utf-8')
-                success, tx_hash = send_raw_tx_multi_rpc(encoded_tx)
+                success, tx_hash = send_raw_tx_private_rpc(encoded_tx)
                 if success:
                     return True, tx_hash
-                return False, "Raydium İşlemi Hazırlandı Ancak RPC Ağ Onayı Bekliyor"
     except Exception:
         pass
 
@@ -332,7 +331,7 @@ def auto_trailing_stop_checker():
 
                             if max_pnl >= 20 and data["stop_level"] < 0:
                                 pnl_tracker[addr]["stop_level"] = 0.0 
-                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": f"🛡️ **${data['symbol']} Stop Seviyesi BAŞABAŞ (%0) Noktasına Çekildi!**"})
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": f"🛡️️ **${data['symbol']} Stop Seviyesi BAŞABAŞ (%0) Noktasına Çekildi!**"})
 
                             elif max_pnl >= 40 and not data.get("tp_done"):
                                 pnl_tracker[addr]["tp_done"] = True
@@ -387,11 +386,12 @@ def check_telegram_commands():
 
                 if text == "/status":
                     uptime_min = int((time.time() - start_time) / 60)
+                    has_private_rpc = "🟢 Özel QuickNode RPC" if "quicknode" in SOLANA_RPC_URL.lower() else "🟡 Genel RPC"
                     status_msg = (
-                        "🤖 **BOT ANLIK DURUM RAPORU (Multi-RPC Raydium Engine)**\n\n"
+                        "🤖 **BOT ANLIK DURUM RAPORU (Private RPC Engine)**\n\n"
                         f"⏱️ **Çalışma Süresi:** {uptime_min} dakika\n"
                         f"🔑 **Cüzdan Durumu:** {'🟢 Yüklü' if payer_keypair else '🔴 Yüklenemedi'}\n"
-                        f"⚡ **Multi-RPC On-Chain Onay:** 🟢 Aktif\n"
+                        f"⚡ **RPC Bağlantısı:** {has_private_rpc}\n"
                         f"🔍 **Taranan Havuz Sayısı:** {scanned_count}\n"
                         f"🎯 **Sinyal Atılan Token:** {len(seen_tokens)}"
                     )
