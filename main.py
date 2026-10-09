@@ -9,7 +9,7 @@ start_time = time.time()
 
 @app.route("/")
 def home():
-    return "Meme Coin Signal Bot (Clean Engine) Aktif!", 200
+    return "Meme Coin Signal Bot (Optimized Engine) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -23,7 +23,7 @@ INVALID_NAMES = ["SOLANA", "BSC", "ROBINHOOD", "ETHEREUM", "BASE", "BITCOIN", "B
 
 def check_advanced_security(mint_address, chain_id):
     if chain_id.lower() != "solana":
-        return True, "🟢 EVM Güvenlik Temiz", "Dengeli Dağılım", "🔥 LP Durumu Normal"
+        return True, "🟢 EVM Güvenlik Temiz", "Dengeli Dağılım", "🔥 LP Durumu Normal", "7.5/10", "EVM Ağı standart kontrol."
     try:
         url = f"https://api.rugcheck.xyz/v1/tokens/{mint_address}/report/summary"
         response = requests.get(url, timeout=5)
@@ -35,9 +35,12 @@ def check_advanced_security(mint_address, chain_id):
             high_dev_share = False
             lp_unlocked = False
             serial_dev_risk = False
+            single_holder_risk = False
             
+            risk_details = []
             for risk in risks:
                 risk_name = risk.get("name", "").lower()
+                risk_details.append(risk.get("name", ""))
                 if "single holder ownership" in risk_name or "high holder concentration" in risk_name:
                     high_dev_share = True
                 if "low liquidity" in risk_name or "unlocked liquidity" in risk_name:
@@ -45,95 +48,80 @@ def check_advanced_security(mint_address, chain_id):
                 if "creator" in risk_name or "dangerous authority" in risk_name:
                     serial_dev_risk = True
 
-            is_safe = score < 300 and not lp_unlocked and not high_dev_share and not serial_dev_risk
+            # Sert Rug Filtresi: Skor 150'den büyükse veya LP kilitli değilse direkt RED
+            is_safe = score < 150 and not lp_unlocked and not high_dev_share and not serial_dev_risk
+            
+            # Dinamik AI / Güven Skoru Hesaplama
+            calculated_score = max(1.0, round(10.0 - (score / 30.0), 1))
+            ai_score_str = f"{calculated_score}/10 🔥" if is_safe else f"{calculated_score}/10 ⚠️"
+            
             status = f"🟢 GÜVENLİ (Skor: {score})" if is_safe else f"🔴 RİSKLİ (Skor: {score})"
             clustering_info = "⚠️ Şüpheli Dev Cüzdanı" if serial_dev_risk else ("⚠️ Yüksek Yoğunlaşma" if high_dev_share else "🟢 Dengeli Dağılım")
-            lp_info = "⚠️ LP Riskli" if lp_unlocked else "🔥 LP Güvenli / Kilitli"
+            lp_info = "⚠️ LP Riskli / Kilitsiz" if lp_unlocked else "🔥 LP Güvenli / Kilitli"
+            
+            eval_summary = "Risk bulunamadı, yapısı dengeli." if is_safe else f"Tespit edilen riskler: {', '.join(risk_details[:2])}"
 
-            return is_safe, status, clustering_info, lp_info
-        return False, "⚠️ Güvenlik Verisi Yok", "Bilinmiyor", "Bilinmiyor"
+            return is_safe, status, clustering_info, lp_info, ai_score_str, eval_summary
+        return False, "⚠️ Güvenlik Verisi Yok", "Bilinmiyor", "Bilinmiyor", "0/10", "Veri alınamadı."
     except Exception:
-        return False, "⚠️ Güvenlik Taraması Hatası", "Bilinmiyor", "Bilinmiyor"
+        return False, "⚠️ Güvenlik Taraması Hatası", "Bilinmiyor", "Bilinmiyor", "0/10", "Tarama hatası."
 
 def get_filtered_memecoins():
     global scanned_count
     filtered_list = []
-    endpoints = [
-        "https://api.dexscreener.com/token-boosts/top/v1",
-        "https://api.dexscreener.com/token-profiles/latest/v1"
-    ]
     
-    candidate_addresses = []
-    for ep in endpoints:
-        try:
-            res = requests.get(ep, timeout=6)
-            if res.status_code == 200:
-                data = res.json()
-                if isinstance(data, list):
-                    for item in data[:20]:
-                        token_addr = item.get("tokenAddress")
-                        if token_addr:
-                            candidate_addresses.append(token_addr)
-        except Exception:
-            pass
+    # En taze ve hareketli çiftleri doğrudan arıyoruz
+    try:
+        url = "https://api.dexscreener.com/latest/dex/search?q=solana"
+        response = requests.get(url, timeout=6)
+        if response.status_code == 200:
+            pairs = response.json().get("pairs", [])
+            scanned_count += len(pairs)
+            
+            for pair in pairs:
+                chain_id = pair.get("chainId", "")
+                if chain_id.lower() != "solana":
+                    continue
 
-    if candidate_addresses:
-        unique_addrs = list(set(candidate_addresses))[:30]
-        scanned_count += len(unique_addrs)
-        addrs_str = ",".join(unique_addrs)
-        try:
-            url = f"https://api.dexscreener.com/latest/dex/tokens/{addrs_str}"
-            response = requests.get(url, timeout=6)
-            if response.status_code == 200:
-                pairs = response.json().get("pairs", [])
-                current_time_ms = int(time.time() * 1000)
-                
-                for pair in pairs:
-                    chain_id = pair.get("chainId", "")
-                    base_token = pair.get("baseToken", {})
-                    symbol = base_token.get("symbol", "UNKNOWN")
-                    address = base_token.get("address", "")
+                base_token = pair.get("baseToken", {})
+                symbol = base_token.get("symbol", "UNKNOWN")
+                address = base_token.get("address", "")
 
-                    # Daha önce bildirilmişse veya karalistedeyse ATLA
-                    if not address or symbol.upper() in IGNORE_TOKENS or address in seen_tokens or symbol.upper() in INVALID_NAMES:
-                        continue
+                if not address or symbol.upper() in IGNORE_TOKENS or address in seen_tokens or symbol.upper() in INVALID_NAMES:
+                    continue
 
-                    pair_created_at = pair.get("pairCreatedAt", 0)
-                    if pair_created_at > 0 and (current_time_ms - pair_created_at) < 1800000:
-                        continue
+                volume = pair.get("volume", {}).get("h1", 0)
+                liquidity = pair.get("liquidity", {}).get("usd", 0)
+                fdv = pair.get("fdv", 0)
+                price_change = pair.get("priceChange", {}).get("h1", 0)
 
-                    volume = pair.get("volume", {}).get("h1", 0)
-                    liquidity = pair.get("liquidity", {}).get("usd", 0)
-                    fdv = pair.get("fdv", 0)
-                    price_change = pair.get("priceChange", {}).get("h1", 0)
+                # Mantıklı hacim ve likidite eşikleri (Çok düşük likiditeler elenir)
+                if volume < 15000 or liquidity < 10000:
+                    continue
 
-                    if volume < 50000 or liquidity < 30000 or price_change > 20 or price_change < 0:
-                        continue
+                is_safe, security_status, clustering_info, lp_info, ai_score, eval_text = check_advanced_security(address, chain_id)
+                if not is_safe:
+                    continue
 
-                    is_safe, security_status, clustering_info, lp_info = check_advanced_security(address, chain_id)
-                    if not is_safe:
-                        continue
+                seen_tokens.add(address)
 
-                    # Bildirilen hafızasına ekle (Tekrar etmesini engeller)
-                    seen_tokens.add(address)
-
-                    filtered_list.append({
-                        "chain": chain_id.upper(),
-                        "symbol": symbol,
-                        "address": address,
-                        "price_change": price_change,
-                        "volume": volume,
-                        "fdv": fdv,
-                        "liquidity": liquidity,
-                        "security": security_status,
-                        "clustering": clustering_info,
-                        "lp_info": lp_info,
-                        "ai_score": "8.8/10 🔥",
-                        "gemini_eval": "Güvenli havuz yapısı tespiti.",
-                        "dex_url": pair.get("url", "https://dexscreener.com"),
-                    })
-        except Exception:
-            pass
+                filtered_list.append({
+                    "chain": chain_id.upper(),
+                    "symbol": symbol,
+                    "address": address,
+                    "price_change": price_change,
+                    "volume": volume,
+                    "fdv": fdv,
+                    "liquidity": liquidity,
+                    "security": security_status,
+                    "clustering": clustering_info,
+                    "lp_info": lp_info,
+                    "ai_score": ai_score,
+                    "gemini_eval": eval_text,
+                    "dex_url": pair.get("url", "https://dexscreener.com"),
+                })
+    except Exception:
+        pass
 
     return filtered_list
 
@@ -153,7 +141,7 @@ def send_telegram_alert(coin):
         "🛡️ **Güvenlik:** " + str(coin['security']) + "\n" +
         "👥 **Kümelenme:** " + str(coin['clustering']) + "\n" +
         "🔥 **Likidite:** " + str(coin['lp_info']) + "\n\n" +
-        "🤖 **Gemini Analizi:** _" + str(coin['gemini_eval']) + "_\n\n" +
+        "🤖 **Analiz Özeti:** _" + str(coin['gemini_eval']) + "_\n\n" +
         "📍 **CA:**\n`" + str(coin['address']) + "`"
     )
 
@@ -187,7 +175,7 @@ def check_telegram_commands():
                     status_msg = (
                         "🤖 **BOT ANLIK DURUM RAPORU (Signal Engine)**\n\n"
                         f"⏱️ **Çalışma Süresi:** {uptime_min} dakika\n"
-                        f"📡 **Sinyal Taraması:** 🟢 Aktif\n"
+                        f"📡 **Sinyal Taraması:** 🟢 Aktif (Hızlı Mod)\n"
                         f"🔍 **Taranan Havuz Sayısı:** {scanned_count}\n"
                         f"🎯 **Sinyal Atılan Token:** {len(seen_tokens)}"
                     )
@@ -205,7 +193,7 @@ def run_bot_loop():
                 time.sleep(2)
         except Exception:
             pass
-        time.sleep(60)
+        time.sleep(15)  # 15 saniyelik daha hızlı tarama periyodu
 
 if __name__ == "__main__":
     bot_thread = threading.Thread(target=run_bot_loop)
