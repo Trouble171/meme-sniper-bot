@@ -9,7 +9,7 @@ start_time = time.time()
 
 @app.route("/")
 def home():
-    return "Meme Coin Signal Bot (Optimized Engine) Aktif!", 200
+    return "Meme Coin Signal Bot (Balanced Engine) Aktif!", 200
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -35,7 +35,6 @@ def check_advanced_security(mint_address, chain_id):
             high_dev_share = False
             lp_unlocked = False
             serial_dev_risk = False
-            single_holder_risk = False
             
             risk_details = []
             for risk in risks:
@@ -48,18 +47,17 @@ def check_advanced_security(mint_address, chain_id):
                 if "creator" in risk_name or "dangerous authority" in risk_name:
                     serial_dev_risk = True
 
-            # Sert Rug Filtresi: Skor 150'den büyükse veya LP kilitli değilse direkt RED
-            is_safe = score < 150 and not lp_unlocked and not high_dev_share and not serial_dev_risk
+            # Dengeli Filtre: Skor 220 altı ve kritik dev riski olmayanlar onaylanır
+            is_safe = score < 220 and not high_dev_share and not serial_dev_risk
             
-            # Dinamik AI / Güven Skoru Hesaplama
-            calculated_score = max(1.0, round(10.0 - (score / 30.0), 1))
+            calculated_score = max(1.0, round(10.0 - (score / 35.0), 1))
             ai_score_str = f"{calculated_score}/10 🔥" if is_safe else f"{calculated_score}/10 ⚠️"
             
             status = f"🟢 GÜVENLİ (Skor: {score})" if is_safe else f"🔴 RİSKLİ (Skor: {score})"
             clustering_info = "⚠️ Şüpheli Dev Cüzdanı" if serial_dev_risk else ("⚠️ Yüksek Yoğunlaşma" if high_dev_share else "🟢 Dengeli Dağılım")
             lp_info = "⚠️ LP Riskli / Kilitsiz" if lp_unlocked else "🔥 LP Güvenli / Kilitli"
             
-            eval_summary = "Risk bulunamadı, yapısı dengeli." if is_safe else f"Tespit edilen riskler: {', '.join(risk_details[:2])}"
+            eval_summary = "Risk oranı düşük, yapı uygun." if is_safe else f"Uyarı: {', '.join(risk_details[:2])}"
 
             return is_safe, status, clustering_info, lp_info, ai_score_str, eval_summary
         return False, "⚠️ Güvenlik Verisi Yok", "Bilinmiyor", "Bilinmiyor", "0/10", "Veri alınamadı."
@@ -70,7 +68,6 @@ def get_filtered_memecoins():
     global scanned_count
     filtered_list = []
     
-    # En taze ve hareketli çiftleri doğrudan arıyoruz
     try:
         url = "https://api.dexscreener.com/latest/dex/search?q=solana"
         response = requests.get(url, timeout=6)
@@ -95,8 +92,8 @@ def get_filtered_memecoins():
                 fdv = pair.get("fdv", 0)
                 price_change = pair.get("priceChange", {}).get("h1", 0)
 
-                # Mantıklı hacim ve likidite eşikleri (Çok düşük likiditeler elenir)
-                if volume < 15000 or liquidity < 10000:
+                # Esnetilmiş Eşikler: Hacim > $8,000, Likidite > $5,000
+                if volume < 8000 or liquidity < 5000:
                     continue
 
                 is_safe, security_status, clustering_info, lp_info, ai_score, eval_text = check_advanced_security(address, chain_id)
@@ -175,7 +172,7 @@ def check_telegram_commands():
                     status_msg = (
                         "🤖 **BOT ANLIK DURUM RAPORU (Signal Engine)**\n\n"
                         f"⏱️ **Çalışma Süresi:** {uptime_min} dakika\n"
-                        f"📡 **Sinyal Taraması:** 🟢 Aktif (Hızlı Mod)\n"
+                        f"📡 **Sinyal Taraması:** 🟢 Aktif (Dengeli Mod)\n"
                         f"🔍 **Taranan Havuz Sayısı:** {scanned_count}\n"
                         f"🎯 **Sinyal Atılan Token:** {len(seen_tokens)}"
                     )
@@ -193,7 +190,7 @@ def run_bot_loop():
                 time.sleep(2)
         except Exception:
             pass
-        time.sleep(15)  # 15 saniyelik daha hızlı tarama periyodu
+        time.sleep(15)
 
 if __name__ == "__main__":
     bot_thread = threading.Thread(target=run_bot_loop)
